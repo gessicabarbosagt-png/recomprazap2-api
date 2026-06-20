@@ -19,13 +19,23 @@ async function bootstrap() {
     }),
   );
 
-  // CORS: permite que o frontend (Next.js) se comunique com esta API.
-  // Em produção, troque pelo domínio real do frontend.
+  const allowedOrigins = [
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'https://recomprazap2-web.vercel.app',
+    ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : []),
+  ];
+
   app.enableCors({
-    origin: process.env.NODE_ENV === 'production'
-      ? 'https://app.recomprazap.com.br'
-      : 'http://localhost:3001',
+    origin: (origin, callback) => {
+      // Permite requests sem origin (ex: curl, Postman, Railway health checks)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      callback(new Error(`CORS bloqueado para origin: ${origin}`));
+    },
     credentials: true,
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   });
 
   const port = process.env.PORT ?? 3000;
