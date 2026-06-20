@@ -1,6 +1,6 @@
 import { Module, Global } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import postgres from 'postgres';
+import postgres = require('postgres');
 
 export const DATABASE_CLIENT = 'DATABASE_CLIENT';
 
