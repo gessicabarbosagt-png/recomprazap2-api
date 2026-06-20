@@ -12,7 +12,7 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
         const connectionString = config.get<string>('DATABASE_URL');
-        const sql = postgres(connectionString, { max: 10 });
+        const sql = postgres(connectionString, { max: 10, transform: postgres.camel });
 
         return sql;
       },

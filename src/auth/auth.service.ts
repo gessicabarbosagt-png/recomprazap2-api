@@ -36,11 +36,9 @@ export class AuthService {
       throw new UnauthorizedException('Credenciais inválidas');
     }
 
-    // 3. Gera o token JWT com os dados que precisamos em cada requisição
-    // Esses dados ficam "dentro" do token e são lidos pelo JwtStrategy
     const payload = {
-      sub: usuario.id,         // ID do usuário (sub = subject, padrão JWT)
-      lojaId: usuario.lojaId,  // Fundamental para o RLS funcionar
+      sub: usuario.id,
+      lojaId: usuario.lojaId,
       perfil: usuario.perfil,
     };
 
