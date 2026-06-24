@@ -81,6 +81,7 @@ export class ClientesService {
       UPDATE clientes
       SET
         nome = COALESCE(${dto.nome ?? null}, nome),
+        telefone = COALESCE(${dto.telefone ?? null}, telefone),
         email = COALESCE(${dto.email ?? null}, email),
         ativo = COALESCE(${dto.ativo ?? null}, ativo),
         updated_at = NOW()
