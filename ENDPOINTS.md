@@ -102,8 +102,11 @@ Authorization: Bearer <token>
 ## WhatsApp
 | Método | Rota | Auth | Descrição |
 |--------|------|------|-----------|
-| POST | `/whatsapp/webhook` | ❌ Público | Recebe mensagens da 360dialog |
+| GET | `/whatsapp/status` | ❌ Público | Status da conexão Baileys: `desconectado`, `aguardando` ou `conectado` |
+| GET | `/whatsapp/qrcode` | ✅ JWT | Retorna QR Code (string) e status da conexão |
+| POST | `/whatsapp/desconectar` | ✅ JWT | Encerra a sessão Baileys |
 | GET | `/whatsapp/mensagens` | ✅ JWT | Histórico de mensagens. Filtro: `?clienteId=uuid` |
+| POST | `/whatsapp/mensagens` | ✅ JWT | Envia mensagem manual para um cliente |
 
 ---
 

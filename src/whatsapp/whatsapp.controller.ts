@@ -20,6 +20,13 @@ export class WhatsappController {
     private readonly baileysService: WhatsappBaileysService,
   ) {}
 
+  // GET /api/v1/whatsapp/status — status público da conexão (sem QR Code)
+  @Get('status')
+  status() {
+    const { status } = this.baileysService.getQrCode();
+    return { status };
+  }
+
   // GET /api/v1/whatsapp/qrcode — retorna QR Code e status da conexão
   @UseGuards(JwtAuthGuard)
   @Get('qrcode')
