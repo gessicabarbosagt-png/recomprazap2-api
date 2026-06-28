@@ -43,6 +43,15 @@ export class WhatsappController {
     return { ok: true, mensagem: 'WhatsApp desconectado' };
   }
 
+  // POST /api/v1/whatsapp/reconectar — força novo ciclo de conexão e gera novo QR
+  @UseGuards(JwtAuthGuard)
+  @Post('reconectar')
+  @HttpCode(HttpStatus.OK)
+  async reconectar() {
+    await this.baileysService.reconectar();
+    return { ok: true, mensagem: 'Reconexão iniciada — aguarde o novo QR Code' };
+  }
+
   // GET /api/v1/whatsapp/mensagens — histórico de mensagens da loja
   @UseGuards(JwtAuthGuard)
   @Get('mensagens')

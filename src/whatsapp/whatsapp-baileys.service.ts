@@ -43,7 +43,10 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit() {
-    await this.iniciarSessao();
+    this.logger.log('[Baileys] onModuleInit — iniciando sessão…');
+    await this.iniciarSessao().catch((err) => {
+      this.logger.error('[Baileys] FALHA CRÍTICA em onModuleInit', err?.message ?? err);
+    });
   }
 
   async onModuleDestroy() {
@@ -56,55 +59,73 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   // ----------------------------------------------------------------
 
   private async iniciarSessao() {
-    const authPath = join(process.cwd(), 'baileys_auth');
+    try {
+      const authPath = join(process.cwd(), 'baileys_auth');
+      this.logger.log(`[Baileys] authPath: ${authPath}`);
 
-    const { state, saveCreds } = await useMultiFileAuthState(authPath);
-    const { version } = await fetchLatestBaileysVersion();
+      const { state, saveCreds } = await useMultiFileAuthState(authPath);
+      this.logger.log('[Baileys] auth state carregado');
 
-    this.socket = makeWASocket({
-      version,
-      auth: state,
-      browser: Browsers.macOS('Chrome'),
-      printQRInTerminal: false,
-      logger: LOGGER_SILENCIOSO,
-      connectTimeoutMs: 30_000,
-    });
-
-    this.socket.ev.on('creds.update', saveCreds);
-
-    this.socket.ev.on('connection.update', async (update: any) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      if (qr) {
-        this.qrAtual = qr;
-        this.status = 'aguardando';
-        this.logger.log('QR Code gerado — aguardando escaneamento');
+      let version: number[];
+      try {
+        const result = await fetchLatestBaileysVersion();
+        version = result.version;
+        this.logger.log(`[Baileys] versão obtida: ${version.join('.')}`);
+      } catch (versionErr) {
+        version = [2, 3000, 1023026504];
+        this.logger.warn(`[Baileys] fetchLatestBaileysVersion falhou (${versionErr?.message}) — usando versão fallback ${version.join('.')}`);
       }
 
-      if (connection === 'open') {
-        this.status = 'conectado';
-        this.qrAtual = null;
-        this.reconectando = false;
-        this.logger.log('✅ WhatsApp conectado via Baileys');
-      }
+      this.socket = makeWASocket({
+        version,
+        auth: state,
+        browser: Browsers.macOS('Chrome'),
+        printQRInTerminal: false,
+        logger: LOGGER_SILENCIOSO,
+        connectTimeoutMs: 30_000,
+      });
+      this.logger.log('[Baileys] socket criado — aguardando eventos de conexão');
 
-      if (connection === 'close') {
-        this.status = 'desconectado';
-        this.qrAtual = null;
+      this.socket.ev.on('creds.update', saveCreds);
 
-        const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const deslogado = statusCode === DisconnectReason.loggedOut;
+      this.socket.ev.on('connection.update', async (update: any) => {
+        const { connection, lastDisconnect, qr } = update;
+        this.logger.log(`[Baileys] connection.update: connection=${connection ?? 'n/a'} qr=${qr ? 'SIM' : 'não'}`);
 
-        if (deslogado) {
-          this.logger.warn('Sessão encerrada (loggedOut). Aguarde novo QR Code.');
-          this.reconectando = false;
-        } else if (!this.reconectando) {
-          this.reconectando = true;
-          this.logger.log(`Conexão fechada (código ${statusCode}). Reconectando…`);
-          setTimeout(() => this.iniciarSessao(), 5_000);
+        if (qr) {
+          this.qrAtual = qr;
+          this.status = 'aguardando';
+          this.logger.log('[Baileys] QR Code gerado — aguardando escaneamento');
         }
-      }
-    });
+
+        if (connection === 'open') {
+          this.status = 'conectado';
+          this.qrAtual = null;
+          this.reconectando = false;
+          this.logger.log('[Baileys] ✅ WhatsApp conectado');
+        }
+
+        if (connection === 'close') {
+          this.status = 'desconectado';
+          this.qrAtual = null;
+
+          const statusCode = lastDisconnect?.error?.output?.statusCode;
+          const errorMsg = lastDisconnect?.error?.message ?? '';
+          const deslogado = statusCode === DisconnectReason.loggedOut;
+
+          this.logger.warn(`[Baileys] conexão fechada — statusCode=${statusCode} deslogado=${deslogado} erro="${errorMsg}"`);
+
+          if (deslogado) {
+            this.logger.warn('[Baileys] loggedOut — reiniciando para gerar novo QR Code');
+            this.reconectando = false;
+            setTimeout(() => this.iniciarSessao(), 3_000);
+          } else if (!this.reconectando) {
+            this.reconectando = true;
+            this.logger.log(`[Baileys] reconectando em 5s…`);
+            setTimeout(() => this.iniciarSessao(), 5_000);
+          }
+        }
+      });
 
     this.socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
       if (type !== 'notify') return;
@@ -115,6 +136,10 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         );
       }
     });
+    } catch (err) {
+      this.logger.error('[Baileys] erro em iniciarSessao', err?.message ?? err);
+      throw err;
+    }
   }
 
   // ----------------------------------------------------------------
@@ -294,5 +319,15 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     this.socket = null;
     this.qrAtual = null;
     this.status = 'desconectado';
+  }
+
+  async reconectar() {
+    this.logger.log('[Baileys] reconectar() chamado manualmente');
+    this.reconectando = false;
+    this.socket?.end(undefined);
+    this.socket = null;
+    this.qrAtual = null;
+    this.status = 'desconectado';
+    await this.iniciarSessao();
   }
 }
