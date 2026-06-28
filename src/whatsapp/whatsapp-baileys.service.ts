@@ -5,13 +5,12 @@ import {
   OnModuleDestroy,
   Inject,
 } from '@nestjs/common';
-import { join } from 'path';
 import { DATABASE_CLIENT } from '../database/database.module';
+import { useDatabaseAuthState } from './baileys-auth-state';
 
 // Importações do Baileys via require para compatibilidade CommonJS
 const {
   makeWASocket,
-  useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
   Browsers,
@@ -67,11 +66,11 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   // ----------------------------------------------------------------
 
   private async iniciarSessao() {
+    // Reseta a flag para que reconexões futuras sejam agendadas corretamente
+    this.reconectando = false;
     try {
-      const authPath = join(process.cwd(), 'baileys_auth');
-      this.diag(`[Baileys] authPath: ${authPath}`);
-
-      const { state, saveCreds } = await useMultiFileAuthState(authPath);
+      this.diag('[Baileys] carregando auth state do PostgreSQL…');
+      const { state, saveCreds } = await useDatabaseAuthState(this.sql);
       this.diag('[Baileys] auth state carregado');
 
       let version: number[];

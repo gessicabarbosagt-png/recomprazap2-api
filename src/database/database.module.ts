@@ -10,9 +10,19 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
     {
       provide: DATABASE_CLIENT,
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => {
+      useFactory: async (config: ConfigService) => {
         const connectionString = config.get<string>('DATABASE_URL');
         const sql = postgres(connectionString, { max: 10, transform: postgres.camel });
+
+        // Migrations de startup — idempotentes, seguras para rodar sempre
+        await sql`ALTER TABLE mensagens_whatsapp ADD COLUMN IF NOT EXISTS tipo VARCHAR(20)`.catch(() => {});
+        await sql`
+          CREATE TABLE IF NOT EXISTS baileys_auth_state (
+            id          TEXT PRIMARY KEY,
+            value       TEXT NOT NULL,
+            updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `.catch(() => {});
 
         return sql;
       },
