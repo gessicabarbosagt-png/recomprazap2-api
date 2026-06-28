@@ -27,6 +27,12 @@ export class WhatsappController {
     return { status };
   }
 
+  // GET /api/v1/whatsapp/diagnostico — logs internos do Baileys para debug
+  @Get('diagnostico')
+  diagnostico() {
+    return this.baileysService.getDiagnostico();
+  }
+
   // GET /api/v1/whatsapp/qrcode — retorna QR Code e status da conexão
   @UseGuards(JwtAuthGuard)
   @Get('qrcode')
