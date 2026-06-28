@@ -37,11 +37,14 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   private status: StatusConexao = 'desconectado';
   private reconectando = false;
   private readonly diagLogs: string[] = [];
+  private msgsRecebidas = 0;
+  private msgsIgnoradas = 0;
+  private ultimaMsgEm: string | null = null;
 
   private diag(msg: string) {
     const entry = `${new Date().toISOString()} ${msg}`;
     this.diagLogs.push(entry);
-    if (this.diagLogs.length > 50) this.diagLogs.shift();
+    if (this.diagLogs.length > 100) this.diagLogs.shift();
     this.logger.log(msg);
   }
 
@@ -135,9 +138,21 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       });
 
       this.socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
-        if (type !== 'notify') return;
+        this.diag(`[Baileys] messages.upsert: type=${type} count=${messages?.length ?? 0}`);
+        if (type !== 'notify') {
+          this.msgsIgnoradas++;
+          return;
+        }
         for (const msg of messages) {
-          if (msg.key.fromMe || !msg.message) continue;
+          const jid = msg.key?.remoteJid ?? '';
+          const fromMe = msg.key?.fromMe ?? false;
+          const hasMsg = !!msg.message;
+          this.diag(`[Baileys] msg: jid=${jid} fromMe=${fromMe} hasMsg=${hasMsg}`);
+          if (fromMe || !hasMsg) {
+            this.msgsIgnoradas++;
+            continue;
+          }
+          this.ultimaMsgEm = new Date().toISOString();
           await this.processarMensagemRecebida(msg).catch((err: any) =>
             this.diag(`[Baileys] erro ao processar mensagem: ${err?.message}`),
           );
@@ -155,7 +170,11 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
   private async processarMensagemRecebida(msg: any) {
     const jid: string = msg.key.remoteJid ?? '';
-    if (!jid.endsWith('@s.whatsapp.net')) return; // ignora grupos
+    if (!jid.endsWith('@s.whatsapp.net')) {
+      this.diag(`[Baileys] msg ignorada (grupo/status): jid=${jid}`);
+      this.msgsIgnoradas++;
+      return;
+    }
 
     const numero = jid.replace('@s.whatsapp.net', '');
     const telefone = '+' + numero;
@@ -167,17 +186,20 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       msg.message?.templateButtonReplyMessage?.selectedId ??
       '';
 
+    const tipoMsg = Object.keys(msg.message ?? {})[0] ?? 'desconhecido';
     const whatsappMsgId: string = msg.key.id ?? '';
 
-    this.logger.log(`Mensagem recebida de ${telefone}: ${texto}`);
+    this.diag(`[Baileys] processando msg de ${telefone} tipo=${tipoMsg} texto="${texto.slice(0, 60)}"`);
+    this.msgsRecebidas++;
 
     // Persiste no histórico
-    await this.registrarMensagem({
+    const rows = await this.registrarMensagem({
       telefone,
       direcao: 'recebida',
-      conteudo: texto,
+      conteudo: texto || `[${tipoMsg}]`,
       whatsappMsgId,
     });
+    this.diag(`[Baileys] registrarMensagem: ${rows} linha(s) inserida(s) para ${telefone}`);
 
     // Interpreta respostas de botão: formato "acao:lembreteId"
     if (texto.includes(':')) {
@@ -245,9 +267,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     conteudo: string;
     whatsappMsgId?: string;
     lembreteId?: string | null;
-  }) {
+  }): Promise<number> {
     try {
-      await this.sql`
+      const result = await this.sql`
         INSERT INTO mensagens_whatsapp
           (loja_id, lembrete_id, cliente_id, direcao, conteudo, whatsapp_message_id, tipo)
         SELECT
@@ -263,8 +285,10 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           AND c.deleted_at IS NULL
         LIMIT 1
       `;
+      return result.count ?? 0;
     } catch (err: any) {
       this.diag(`[Baileys] erro ao registrar mensagem: ${err?.message}`);
+      return -1;
     }
   }
 
@@ -324,6 +348,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       qrcodePresente: !!this.qrAtual,
       socketAtivo: !!this.socket,
       reconectando: this.reconectando,
+      msgsRecebidas: this.msgsRecebidas,
+      msgsIgnoradas: this.msgsIgnoradas,
+      ultimaMsgEm: this.ultimaMsgEm,
       logs: [...this.diagLogs],
     };
   }
