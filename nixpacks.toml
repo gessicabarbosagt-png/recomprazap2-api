@@ -2,4 +2,4 @@
 cmds = ["npm install", "npm run build"]
 
 [start]
-cmd = "npm run start"
+cmd = "node -e \"const {Client}=require('pg');const c=new Client({connectionString:process.env.DATABASE_URL});c.connect().then(()=>c.query('ALTER TABLE mensagens_whatsapp ADD COLUMN IF NOT EXISTS tipo VARCHAR(20)')).then(()=>c.end()).catch(e=>{console.error('migration err',e.message);c.end()})\" && npm run start"

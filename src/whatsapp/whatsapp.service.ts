@@ -31,7 +31,7 @@ export class WhatsappService {
       await this.sql`
         INSERT INTO mensagens_whatsapp
           (loja_id, cliente_id, direcao, conteudo, tipo)
-        SELECT ${lojaId}, c.id, 'saida', ${conteudo}, 'manual'
+        SELECT ${lojaId}, c.id, 'enviada'::mensagem_direcao, ${conteudo}, 'manual'
         FROM clientes c
         WHERE c.telefone = ${telefone} AND c.loja_id = ${lojaId}
         LIMIT 1

@@ -175,7 +175,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     // Persiste no histórico
     await this.registrarMensagem({
       telefone,
-      direcao: 'entrada',
+      direcao: 'recebida',
       conteudo: texto,
       whatsappMsgId,
     });
@@ -242,7 +242,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
   private async registrarMensagem(params: {
     telefone: string;
-    direcao: 'entrada' | 'saida';
+    direcao: 'recebida' | 'enviada';
     conteudo: string;
     whatsappMsgId?: string;
     lembreteId?: string | null;
@@ -250,15 +250,15 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     try {
       await this.sql`
         INSERT INTO mensagens_whatsapp
-          (loja_id, lembrete_id, cliente_id, direcao, conteudo, whatsapp_msg_id, tipo)
+          (loja_id, lembrete_id, cliente_id, direcao, conteudo, whatsapp_message_id, tipo)
         SELECT
           cr.loja_id,
           ${params.lembreteId ?? null},
           c.id,
-          ${params.direcao},
+          ${params.direcao}::mensagem_direcao,
           ${params.conteudo},
           ${params.whatsappMsgId ?? null},
-          ${params.direcao === 'saida' ? 'lembrete' : 'manual'}
+          ${params.direcao === 'enviada' ? 'lembrete' : 'manual'}
         FROM clientes c
         JOIN ciclos_recompra cr ON cr.cliente_id = c.id
         WHERE c.telefone = ${params.telefone}
@@ -266,8 +266,8 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         LIMIT 1
         ON CONFLICT DO NOTHING
       `;
-    } catch (err) {
-      this.logger.warn('Não foi possível registrar mensagem no histórico', err?.message);
+    } catch (err: any) {
+      this.diag(`[Baileys] erro ao registrar mensagem: ${err?.message}`);
     }
   }
 
@@ -295,7 +295,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     await this.registrarMensagem({
       telefone,
-      direcao: 'saida',
+      direcao: 'enviada',
       conteudo: texto,
       lembreteId,
     });
