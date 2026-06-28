@@ -251,7 +251,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         INSERT INTO mensagens_whatsapp
           (loja_id, lembrete_id, cliente_id, direcao, conteudo, whatsapp_message_id, tipo)
         SELECT
-          cr.loja_id,
+          c.loja_id,
           ${params.lembreteId ?? null},
           c.id,
           ${params.direcao}::mensagem_direcao,
@@ -259,11 +259,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           ${params.whatsappMsgId ?? null},
           ${params.direcao === 'enviada' ? 'lembrete' : 'manual'}
         FROM clientes c
-        JOIN ciclos_recompra cr ON cr.cliente_id = c.id
         WHERE c.telefone = ${params.telefone}
-          AND cr.deleted_at IS NULL
+          AND c.deleted_at IS NULL
         LIMIT 1
-        ON CONFLICT DO NOTHING
       `;
     } catch (err: any) {
       this.diag(`[Baileys] erro ao registrar mensagem: ${err?.message}`);
