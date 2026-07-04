@@ -126,8 +126,11 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           this.diag(`[Baileys] conexão fechada — statusCode=${statusCode} deslogado=${deslogado} erro="${errorMsg}"`);
 
           if (deslogado) {
-            this.diag('[Baileys] loggedOut — reiniciando para gerar novo QR Code');
+            this.diag('[Baileys] loggedOut — limpando creds do banco e reiniciando para gerar novo QR Code');
             this.reconectando = false;
+            await this.sql`DELETE FROM baileys_auth_state`.catch((e: any) =>
+              this.diag(`[Baileys] erro ao limpar auth state: ${e?.message}`),
+            );
             setTimeout(() => this.iniciarSessao(), 3_000);
           } else if (!this.reconectando) {
             this.reconectando = true;
@@ -370,6 +373,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     this.socket = null;
     this.qrAtual = null;
     this.status = 'desconectado';
+    await this.sql`DELETE FROM baileys_auth_state`.catch(() => {});
     await this.iniciarSessao();
   }
 }
