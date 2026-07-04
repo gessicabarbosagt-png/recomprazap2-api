@@ -155,7 +155,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
             this.msgsIgnoradas++;
             continue;
           }
-          this.ultimaMsgEm = new Date().toISOString();
           await this.processarMensagemRecebida(msg).catch((err: any) =>
             this.diag(`[Baileys] erro ao processar mensagem: ${err?.message}`),
           );
@@ -194,6 +193,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     this.diag(`[Baileys] processando msg de ${telefone} tipo=${tipoMsg} texto="${texto.slice(0, 60)}"`);
     this.msgsRecebidas++;
+    this.ultimaMsgEm = new Date().toISOString();
 
     // Persiste no histórico
     const rows = await this.registrarMensagem({
@@ -202,12 +202,21 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       conteudo: texto || `[${tipoMsg}]`,
       whatsappMsgId,
     });
-    this.diag(`[Baileys] registrarMensagem: ${rows} linha(s) inserida(s) para ${telefone}`);
 
-    // Interpreta respostas de botão: formato "acao:lembreteId"
-    if (texto.includes(':')) {
-      const [acao, lembreteId] = texto.split(':');
-      await this.processarResposta(acao, lembreteId, telefone);
+    if (rows === 0) {
+      this.diag(`[Baileys] AVISO: nenhum cliente cadastrado com telefone ${telefone} — mensagem não salva`);
+    } else {
+      this.diag(`[Baileys] mensagem salva: ${rows} linha(s) para ${telefone}`);
+    }
+
+    // Interpreta respostas de botão: formato exato "acao:uuid"
+    const ACOES_VALIDAS = ['pedir', 'depois', 'sair'];
+    const matchResposta = texto.match(/^(pedir|depois|sair):([a-f0-9-]{36})$/);
+    if (matchResposta) {
+      const [, acao, lembreteId] = matchResposta;
+      if (ACOES_VALIDAS.includes(acao)) {
+        await this.processarResposta(acao, lembreteId, telefone);
+      }
     }
   }
 
