@@ -218,6 +218,7 @@ export class CiclosService {
         quantidade:   ciclo.quantidade ?? undefined,
         unidade:      ciclo.produtoUnidade ?? undefined,
         lembreteId:   lembrete.id,
+        lojaId,
       });
 
       await this.sql`UPDATE lembretes SET status='enviado', enviado_em=NOW() WHERE id=${lembrete.id}`;
@@ -269,6 +270,7 @@ export class CiclosService {
           quantidade:  ciclo.quantidade ?? undefined,
           unidade:     ciclo.produtoUnidade ?? undefined,
           lembreteId:  lembrete.id,
+          lojaId,
         });
         await this.sql`UPDATE lembretes SET status='enviado', enviado_em=NOW() WHERE id=${lembrete.id}`;
         await this.sql`UPDATE ciclos_recompra SET status_ultimo_envio='sucesso', updated_at=NOW() WHERE id=${ciclo.id}`;

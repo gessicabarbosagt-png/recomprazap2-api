@@ -87,6 +87,7 @@ export class LembretesProcessor {
         quantidade,
         unidade: produtoUnidade,
         lembreteId,
+        lojaId,
       });
 
       // Atualiza o lembrete para 'enviado'

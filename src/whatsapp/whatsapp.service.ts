@@ -11,7 +11,7 @@ export class WhatsappService {
     private readonly baileysService: WhatsappBaileysService,
   ) {}
 
-  // Chamado pelo worker de lembretes — delega ao Baileys
+  // Chamado pelo worker de lembretes e pelo CiclosService — delega ao Baileys
   async enviarLembrete(params: {
     telefone: string;
     clienteNome: string;
@@ -19,6 +19,7 @@ export class WhatsappService {
     quantidade?: number;
     unidade?: string;
     lembreteId: string;
+    lojaId: string;
   }) {
     return this.baileysService.enviarLembrete(params);
   }

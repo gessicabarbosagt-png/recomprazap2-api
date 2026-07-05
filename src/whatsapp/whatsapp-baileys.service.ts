@@ -209,15 +209,35 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       this.diag(`[Baileys] mensagem salva: ${rows} linha(s) para ${telefone}`);
     }
 
-    // Interpreta respostas de botão: formato exato "acao:uuid"
-    const ACOES_VALIDAS = ['pedir', 'depois', 'sair'];
-    const matchResposta = texto.match(/^(pedir|depois|sair):([a-f0-9-]{36})$/);
-    if (matchResposta) {
-      const [, acao, lembreteId] = matchResposta;
-      if (ACOES_VALIDAS.includes(acao)) {
-        await this.processarResposta(acao, lembreteId, telefone);
-      }
+    // Interpreta respostas numéricas: 1 = pedir, 2 = depois, 3 = não quero mais
+    if (/^[123]$/.test(texto.trim())) {
+      await this.processarRespostaPorTelefone(texto.trim(), telefone);
     }
+  }
+
+  private async processarRespostaPorTelefone(opcao: string, telefone: string) {
+    const acaoMap: Record<string, string> = { '1': 'pedir', '2': 'depois', '3': 'sair' };
+    const acao = acaoMap[opcao];
+    if (!acao) return;
+
+    const [lembrete] = await this.sql`
+      SELECT l.id
+      FROM lembretes l
+      JOIN ciclos_recompra cr ON cr.id = l.ciclo_id
+      JOIN clientes c ON c.id = cr.cliente_id
+      WHERE c.telefone = ${telefone}
+        AND l.status = 'enviado'
+      ORDER BY l.enviado_em DESC
+      LIMIT 1
+    `;
+
+    if (!lembrete) {
+      this.diag(`[Baileys] nenhum lembrete pendente para ${telefone} — resposta "${opcao}" ignorada`);
+      return;
+    }
+
+    this.diag(`[Baileys] resposta "${opcao}" → ação "${acao}" para lembrete ${lembrete.id}`);
+    await this.processarResposta(acao, lembrete.id, telefone);
   }
 
   private async processarResposta(acao: string, lembreteId: string, telefone: string) {
@@ -308,6 +328,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   // Envio de mensagens
   // ----------------------------------------------------------------
 
+  private static readonly TEMPLATE_PADRAO =
+    `Oi, {nome}! 👋\n\nJá está na hora de repor *{produto}*{quantidade}. Posso te ajudar?\n\nResponda:\n1️⃣ *1* — Quero pedir\n2️⃣ *2* — Me avise depois\n3️⃣ *3* — Não quero mais`;
+
   async enviarLembrete(params: {
     telefone: string;
     clienteNome: string;
@@ -315,14 +338,23 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     quantidade?: number;
     unidade?: string;
     lembreteId: string;
+    lojaId: string;
   }) {
-    const { telefone, clienteNome, produtoNome, quantidade, unidade, lembreteId } = params;
+    const { telefone, clienteNome, produtoNome, quantidade, unidade, lembreteId, lojaId } = params;
+
+    const [loja] = await this.sql`SELECT nome, modelo_mensagem FROM lojas WHERE id = ${lojaId}`;
+
+    const template: string = loja?.modeloMensagem || WhatsappBaileysService.TEMPLATE_PADRAO;
 
     const qtdTexto = quantidade
       ? ` (${quantidade}${unidade ? ' ' + unidade : ''})`
       : '';
 
-    const texto = `Oi, ${clienteNome}! 👋\n\nJá está na hora de repor *${produtoNome}*${qtdTexto}. Posso te ajudar a pedir?\n\nResponda com:\n✅ *pedir:${lembreteId}*\n⏰ *depois:${lembreteId}*\n❌ *sair:${lembreteId}*`;
+    const texto = template
+      .replace(/\{nome\}/g, clienteNome)
+      .replace(/\{produto\}/g, produtoNome)
+      .replace(/\{quantidade\}/g, qtdTexto)
+      .replace(/\{loja\}/g, loja?.nome ?? '');
 
     await this.enviarMensagem(telefone, texto);
 

@@ -65,6 +65,7 @@ export class RetryProcessor {
         quantidade:  original.quantidade,
         unidade:     original.produtoUnidade,
         lembreteId:  retryLembrete.id,
+        lojaId,
       });
 
       await this.sql`
