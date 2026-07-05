@@ -40,6 +40,8 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   private msgsRecebidas = 0;
   private msgsIgnoradas = 0;
   private ultimaMsgEm: string | null = null;
+  // Mapa LID → JID telefone: necessário porque WhatsApp envia @lid em vez de @s.whatsapp.net
+  private readonly lidToPhone = new Map<string, string>();
 
   private diag(msg: string) {
     const entry = `${new Date().toISOString()} ${msg}`;
@@ -97,6 +99,16 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       this.diag('[Baileys] socket criado — aguardando eventos de conexão');
 
       this.socket.ev.on('creds.update', saveCreds);
+
+      // Constrói mapa LID → telefone para resolver @lid em mensagens recebidas
+      this.socket.ev.on('contacts.upsert', (contacts: any[]) => {
+        for (const c of contacts) {
+          if (c.lid && c.id) {
+            this.lidToPhone.set(c.lid, c.id);
+          }
+        }
+        this.diag(`[Baileys] contacts.upsert: ${contacts.length} contato(s), mapa LID tem ${this.lidToPhone.size} entradas`);
+      });
 
       this.socket.ev.on('connection.update', async (update: any) => {
         const { connection, lastDisconnect, qr } = update;
@@ -171,7 +183,21 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   // ----------------------------------------------------------------
 
   private async processarMensagemRecebida(msg: any) {
-    const jid: string = msg.key.remoteJid ?? '';
+    let jid: string = msg.key.remoteJid ?? '';
+
+    // WhatsApp envia @lid em vez de @s.whatsapp.net para alguns contatos — resolve via mapa
+    if (jid.endsWith('@lid')) {
+      const resolvido = this.lidToPhone.get(jid);
+      if (resolvido) {
+        this.diag(`[Baileys] LID ${jid} resolvido para ${resolvido}`);
+        jid = resolvido;
+      } else {
+        this.diag(`[Baileys] LID ${jid} não resolvido (contato não sincronizado ainda) — ignorando`);
+        this.msgsIgnoradas++;
+        return;
+      }
+    }
+
     if (!jid.endsWith('@s.whatsapp.net')) {
       this.diag(`[Baileys] msg ignorada (grupo/status): jid=${jid}`);
       this.msgsIgnoradas++;
