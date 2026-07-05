@@ -23,6 +23,7 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
             updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `.catch(() => {});
+        await sql`ALTER TABLE ciclos_recompra ADD COLUMN IF NOT EXISTS status_ultimo_envio VARCHAR(20)`.catch(() => {});
 
         return sql;
       },

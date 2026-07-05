@@ -1,10 +1,12 @@
 import {
   Injectable,
   Inject,
+  Logger,
   NotFoundException,
   ConflictException,
 } from '@nestjs/common';
 import { DATABASE_CLIENT } from '../database/database.module';
+import { WhatsappService } from '../whatsapp/whatsapp.service';
 
 // DTO inline — idealmente ficaria em dto/criar-ciclo.dto.ts
 // Mantido aqui para facilitar a leitura do service
@@ -23,8 +25,11 @@ export interface AtualizarCicloDto {
 
 @Injectable()
 export class CiclosService {
+  private readonly logger = new Logger(CiclosService.name);
+
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
+    private readonly whatsappService: WhatsappService,
   ) {}
 
   // Lista todos os ciclos ativos de uma loja, com dados do cliente e produto
@@ -37,6 +42,7 @@ export class CiclosService {
         cr.ativo,
         cr.proxima_notificacao,
         cr.ultima_compra,
+        cr.status_ultimo_envio,
         cr.created_at,
         -- Dados do cliente (para não precisar de uma segunda requisição no frontend)
         c.id   AS cliente_id,
@@ -183,5 +189,94 @@ export class CiclosService {
         updated_at = NOW()
       WHERE id = ${id} AND loja_id = ${lojaId}
     `;
+  }
+
+  // Dispara lembrete imediato para um ciclo específico
+  async enviarLembreteImediato(id: string, lojaId: string) {
+    const [ciclo] = await this.sql`
+      SELECT cr.id, cr.quantidade,
+             c.nome  AS cliente_nome,  c.telefone AS cliente_telefone,
+             p.nome  AS produto_nome,  p.unidade  AS produto_unidade
+      FROM ciclos_recompra cr
+      JOIN clientes c ON c.id = cr.cliente_id
+      JOIN produtos  p ON p.id = cr.produto_id
+      WHERE cr.id = ${id} AND cr.loja_id = ${lojaId} AND cr.deleted_at IS NULL
+    `;
+    if (!ciclo) throw new NotFoundException('Ciclo não encontrado');
+
+    const [lembrete] = await this.sql`
+      INSERT INTO lembretes (loja_id, ciclo_id, status, agendado_para)
+      VALUES (${lojaId}, ${id}, 'agendado', NOW())
+      RETURNING id
+    `;
+
+    try {
+      await this.whatsappService.enviarLembrete({
+        telefone:     ciclo.clienteTelefone,
+        clienteNome:  ciclo.clienteNome,
+        produtoNome:  ciclo.produtoNome,
+        quantidade:   ciclo.quantidade ?? undefined,
+        unidade:      ciclo.produtoUnidade ?? undefined,
+        lembreteId:   lembrete.id,
+      });
+
+      await this.sql`UPDATE lembretes SET status='enviado', enviado_em=NOW() WHERE id=${lembrete.id}`;
+      await this.sql`UPDATE ciclos_recompra SET status_ultimo_envio='sucesso', updated_at=NOW() WHERE id=${id} AND loja_id=${lojaId}`;
+
+      return { ok: true, status: 'sucesso' };
+    } catch (err: any) {
+      await this.sql`UPDATE lembretes SET status='cancelado' WHERE id=${lembrete.id}`;
+      await this.sql`UPDATE ciclos_recompra SET status_ultimo_envio='erro', updated_at=NOW() WHERE id=${id} AND loja_id=${lojaId}`;
+      throw err;
+    }
+  }
+
+  // Retorna quantos ciclos estão vencidos e dispara todos em background (5s de delay entre cada)
+  async dispararTodos(lojaId: string) {
+    const ciclos = await this.sql`
+      SELECT cr.id, cr.quantidade,
+             c.nome  AS cliente_nome,  c.telefone AS cliente_telefone,
+             p.nome  AS produto_nome,  p.unidade  AS produto_unidade
+      FROM ciclos_recompra cr
+      JOIN clientes c ON c.id = cr.cliente_id
+      JOIN produtos  p ON p.id = cr.produto_id
+      WHERE cr.loja_id = ${lojaId}
+        AND cr.ativo = TRUE
+        AND cr.deleted_at IS NULL
+        AND cr.proxima_notificacao <= NOW()
+    `;
+
+    const total = ciclos.length;
+    this.processarDisparoEmMassa(ciclos, lojaId).catch((err) =>
+      this.logger.error('Erro no disparo em massa', err?.message),
+    );
+
+    return { total, mensagem: `Disparando ${total} lembrete(s) em background com intervalo de 5s` };
+  }
+
+  private async processarDisparoEmMassa(ciclos: any[], lojaId: string) {
+    for (const ciclo of ciclos) {
+      try {
+        const [lembrete] = await this.sql`
+          INSERT INTO lembretes (loja_id, ciclo_id, status, agendado_para)
+          VALUES (${lojaId}, ${ciclo.id}, 'agendado', NOW())
+          RETURNING id
+        `;
+        await this.whatsappService.enviarLembrete({
+          telefone:    ciclo.clienteTelefone,
+          clienteNome: ciclo.clienteNome,
+          produtoNome: ciclo.produtoNome,
+          quantidade:  ciclo.quantidade ?? undefined,
+          unidade:     ciclo.produtoUnidade ?? undefined,
+          lembreteId:  lembrete.id,
+        });
+        await this.sql`UPDATE lembretes SET status='enviado', enviado_em=NOW() WHERE id=${lembrete.id}`;
+        await this.sql`UPDATE ciclos_recompra SET status_ultimo_envio='sucesso', updated_at=NOW() WHERE id=${ciclo.id}`;
+      } catch (err: any) {
+        this.logger.error(`Erro ao enviar lembrete para ciclo ${ciclo.id}`, err?.message);
+        await this.sql`UPDATE ciclos_recompra SET status_ultimo_envio='erro', updated_at=NOW() WHERE id=${ciclo.id}`;
+      }
+      await new Promise((r) => setTimeout(r, 5_000));
+    }
   }
 }
