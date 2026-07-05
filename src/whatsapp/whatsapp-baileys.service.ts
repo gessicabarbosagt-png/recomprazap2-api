@@ -46,7 +46,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   private diag(msg: string) {
     const entry = `${new Date().toISOString()} ${msg}`;
     this.diagLogs.push(entry);
-    if (this.diagLogs.length > 100) this.diagLogs.shift();
+    if (this.diagLogs.length > 300) this.diagLogs.shift();
     this.logger.log(msg);
   }
 
@@ -246,23 +246,43 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const acao = acaoMap[opcao];
     if (!acao) return;
 
+    this.diag(`[Baileys] processarRespostaPorTelefone: opcao="${opcao}" telefone="${telefone}"`);
+
+    // Verifica se o cliente existe no banco com esse telefone
+    const [cliente] = await this.sql`
+      SELECT id, nome FROM clientes WHERE telefone = ${telefone} AND deleted_at IS NULL LIMIT 1
+    `;
+    if (!cliente) {
+      this.diag(`[Baileys] AVISO: cliente não encontrado para telefone "${telefone}" — verifique o formato (+55XXXXXXXXXXX)`);
+      return;
+    }
+    this.diag(`[Baileys] cliente encontrado: ${cliente.nome} (id=${cliente.id})`);
+
     const [lembrete] = await this.sql`
-      SELECT l.id
+      SELECT l.id, l.status, l.enviado_em
       FROM lembretes l
       JOIN ciclos_recompra cr ON cr.id = l.ciclo_id
-      JOIN clientes c ON c.id = cr.cliente_id
-      WHERE c.telefone = ${telefone}
+      WHERE cr.cliente_id = ${cliente.id}
         AND l.status = 'enviado'
       ORDER BY l.enviado_em DESC
       LIMIT 1
     `;
 
     if (!lembrete) {
-      this.diag(`[Baileys] nenhum lembrete pendente para ${telefone} — resposta "${opcao}" ignorada`);
+      // Diagnóstico extra: mostra os últimos lembretes desse cliente independente do status
+      const recentes = await this.sql`
+        SELECT l.id, l.status, l.enviado_em
+        FROM lembretes l
+        JOIN ciclos_recompra cr ON cr.id = l.ciclo_id
+        WHERE cr.cliente_id = ${cliente.id}
+        ORDER BY l.enviado_em DESC NULLS LAST
+        LIMIT 3
+      `;
+      this.diag(`[Baileys] nenhum lembrete com status=enviado para ${cliente.nome}. Últimos: ${JSON.stringify(recentes.map((r: any) => ({ id: r.id, status: r.status, em: r.enviadoEm })))}`);
       return;
     }
 
-    this.diag(`[Baileys] resposta "${opcao}" → ação "${acao}" para lembrete ${lembrete.id}`);
+    this.diag(`[Baileys] resposta "${opcao}" → ação "${acao}" para lembrete ${lembrete.id} (enviado_em=${lembrete.enviadoEm})`);
     await this.processarResposta(acao, lembrete.id, telefone);
   }
 
