@@ -172,6 +172,25 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
       this.socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
         this.diag(`[Baileys] messages.upsert: type=${type} count=${messages?.length ?? 0}`);
+
+        // Captura LID de echos fromMe=true ANTES de descartar type=append
+        for (const m of (messages ?? [])) {
+          if (m.key?.fromMe && m.key?.remoteJid?.endsWith('@lid')) {
+            const lid: string = m.key.remoteJid;
+            const mid: string = m.key?.id ?? '';
+            const phoneJid = mid ? this.pendingSendJids.get(mid) : undefined;
+            if (phoneJid && !this.lidToPhone.has(lid)) {
+              this.lidToPhone.set(lid, phoneJid);
+              this.sql`
+                INSERT INTO whatsapp_lid_map (lid, phone_jid, updated_at)
+                VALUES (${lid}, ${phoneJid}, NOW())
+                ON CONFLICT (lid) DO UPDATE SET phone_jid = EXCLUDED.phone_jid, updated_at = NOW()
+              `.catch(() => {});
+              this.diag(`[Baileys] LID ${lid} → ${phoneJid} via echo (type=${type})`);
+            }
+          }
+        }
+
         if (type !== 'notify') {
           this.msgsIgnoradas++;
           return;
@@ -462,9 +481,32 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const numero = telefone.replace('+', '').replace(/\D/g, '');
     const jid = `${numero}@s.whatsapp.net`;
 
+    // Resolve LID antes de enviar — garante que a resposta do cliente seja processada
+    const lidJaConhecido = [...this.lidToPhone.values()].some(v => v === jid);
+    if (!lidJaConhecido) {
+      try {
+        const results = await this.socket.onWhatsApp(numero);
+        const info = Array.isArray(results) ? results[0] : results;
+        const lid: string | undefined = info?.lid;
+        if (lid && info?.exists !== false) {
+          this.lidToPhone.set(lid, jid);
+          this.sql`
+            INSERT INTO whatsapp_lid_map (lid, phone_jid, updated_at)
+            VALUES (${lid}, ${jid}, NOW())
+            ON CONFLICT (lid) DO UPDATE SET phone_jid = EXCLUDED.phone_jid, updated_at = NOW()
+          `.catch(() => {});
+          this.diag(`[Baileys] LID via onWhatsApp: ${lid} → ${jid}`);
+        } else {
+          this.diag(`[Baileys] onWhatsApp(${numero}): sem LID no retorno (exists=${info?.exists})`);
+        }
+      } catch (e: any) {
+        this.diag(`[Baileys] onWhatsApp(${numero}) falhou: ${e?.message}`);
+      }
+    }
+
     const enviado = await this.socket.sendMessage(jid, { text: texto });
 
-    // Registra msgId→phone para capturar o LID quando o echo fromMe=true chegar
+    // Também registra msgId→phone como fallback para capturar LID via echo
     const msgId: string = enviado?.key?.id ?? '';
     if (msgId) {
       this.pendingSendJids.set(msgId, jid);
