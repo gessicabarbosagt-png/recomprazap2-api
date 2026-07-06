@@ -137,15 +137,15 @@ export class LembretesService {
     return retry;
   }
 
-  // Resumo para o relatório periódico (RF-42 a RF-46)
-  // Retorna contagens de lembretes no período informado
+  // Resumo para o dashboard — nomes de coluna alinhados com a interface do frontend
   async resumoPorPeriodo(lojaId: string, diasAtras: number) {
     const [resumo] = await this.sql`
       SELECT
-        COUNT(*)                                        AS total_enviados,
-        COUNT(*) FILTER (WHERE status = 'respondido')  AS total_respondidos,
-        COUNT(*) FILTER (WHERE status = 'sem_resposta') AS total_sem_resposta,
-        COUNT(*) FILTER (WHERE status = 'cancelado')   AS total_cancelados,
+        COUNT(*) FILTER (WHERE status IN ('enviado','respondido','sem_resposta')) AS total,
+        COUNT(*) FILTER (WHERE status = 'enviado')      AS enviados,
+        COUNT(*) FILTER (WHERE status = 'respondido')   AS respondidos,
+        COUNT(*) FILTER (WHERE status = 'sem_resposta') AS sem_resposta,
+        COUNT(*) FILTER (WHERE status = 'cancelado')    AS cancelados,
         ROUND(
           COUNT(*) FILTER (WHERE status = 'respondido')::numeric
           / NULLIF(COUNT(*) FILTER (WHERE status IN ('enviado','respondido','sem_resposta')), 0) * 100,

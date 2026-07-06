@@ -100,15 +100,31 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
       this.socket.ev.on('creds.update', saveCreds);
 
-      // Constrói mapa LID → telefone para resolver @lid em mensagens recebidas
-      this.socket.ev.on('contacts.upsert', (contacts: any[]) => {
+      // Carrega mapeamentos LID→telefone persistidos para sobreviver a redeployments
+      const lidRows = await this.sql`SELECT lid, phone_jid FROM whatsapp_lid_map`;
+      for (const r of lidRows) {
+        this.lidToPhone.set(r.lid, r.phoneJid);
+      }
+      this.diag(`[Baileys] LID map carregado do banco: ${lidRows.length} entradas`);
+
+      // Persiste LID→telefone em contacts.upsert e contacts.update
+      const salvarLids = async (contacts: any[]) => {
+        let novos = 0;
         for (const c of contacts) {
           if (c.lid && c.id) {
             this.lidToPhone.set(c.lid, c.id);
+            novos++;
+            this.sql`
+              INSERT INTO whatsapp_lid_map (lid, phone_jid, updated_at)
+              VALUES (${c.lid}, ${c.id}, NOW())
+              ON CONFLICT (lid) DO UPDATE SET phone_jid = EXCLUDED.phone_jid, updated_at = NOW()
+            `.catch(() => {});
           }
         }
-        this.diag(`[Baileys] contacts.upsert: ${contacts.length} contato(s), mapa LID tem ${this.lidToPhone.size} entradas`);
-      });
+        if (novos > 0) this.diag(`[Baileys] contacts: ${novos} LID(s) persistidos (mapa total: ${this.lidToPhone.size})`);
+      };
+      this.socket.ev.on('contacts.upsert', salvarLids);
+      this.socket.ev.on('contacts.update', salvarLids);
 
       this.socket.ev.on('connection.update', async (update: any) => {
         const { connection, lastDisconnect, qr } = update;
@@ -187,12 +203,18 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     // WhatsApp envia @lid em vez de @s.whatsapp.net para alguns contatos — resolve via mapa
     if (jid.endsWith('@lid')) {
-      const resolvido = this.lidToPhone.get(jid);
+      let resolvido = this.lidToPhone.get(jid);
+      if (!resolvido) {
+        // Fallback: tenta no banco (o mapa em memória reseta a cada redeploy)
+        const [row] = await this.sql`SELECT phone_jid FROM whatsapp_lid_map WHERE lid = ${jid}`;
+        resolvido = row?.phoneJid;
+        if (resolvido) this.lidToPhone.set(jid, resolvido); // cache
+      }
       if (resolvido) {
         this.diag(`[Baileys] LID ${jid} resolvido para ${resolvido}`);
         jid = resolvido;
       } else {
-        this.diag(`[Baileys] LID ${jid} não resolvido (contato não sincronizado ainda) — ignorando`);
+        this.diag(`[Baileys] LID ${jid} sem mapeamento (contato nunca sincronizado) — ignorando`);
         this.msgsIgnoradas++;
         return;
       }

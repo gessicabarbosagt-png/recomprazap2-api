@@ -25,6 +25,13 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
         `.catch(() => {});
         await sql`ALTER TABLE ciclos_recompra ADD COLUMN IF NOT EXISTS status_ultimo_envio VARCHAR(20)`.catch(() => {});
         await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS modelo_mensagem TEXT`.catch(() => {});
+        await sql`
+          CREATE TABLE IF NOT EXISTS whatsapp_lid_map (
+            lid        TEXT PRIMARY KEY,
+            phone_jid  TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `.catch(() => {});
 
         return sql;
       },
