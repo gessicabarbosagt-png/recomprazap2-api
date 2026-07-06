@@ -171,6 +171,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       });
 
       this.socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
+        for (const m of (messages ?? [])) {
+          this.diag(`[RAW UPSERT] type=${type} remoteJid=${m.key?.remoteJid} fromMe=${m.key?.fromMe} hasMessage=${!!m.message} messageStubType=${m.messageStubType ?? 'none'}`);
+        }
         this.diag(`[Baileys] messages.upsert: type=${type} count=${messages?.length ?? 0}`);
 
         // Captura LID de echos fromMe=true ANTES de descartar type=append
