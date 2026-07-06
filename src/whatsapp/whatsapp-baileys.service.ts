@@ -42,6 +42,8 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   private ultimaMsgEm: string | null = null;
   // Mapa LID → JID telefone: necessário porque WhatsApp envia @lid em vez de @s.whatsapp.net
   private readonly lidToPhone = new Map<string, string>();
+  // Rastreia msgId → phoneJid para descobrir LID a partir do echo fromMe=true
+  private readonly pendingSendJids = new Map<string, string>();
 
   private diag(msg: string) {
     const entry = `${new Date().toISOString()} ${msg}`;
@@ -179,7 +181,25 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           const fromMe = msg.key?.fromMe ?? false;
           const hasMsg = !!msg.message;
           this.diag(`[Baileys] msg: jid=${jid} fromMe=${fromMe} hasMsg=${hasMsg}`);
-          if (fromMe || !hasMsg) {
+          if (fromMe) {
+            // Aproveita o echo de mensagens enviadas para descobrir LID→phone
+            if (jid.endsWith('@lid')) {
+              const msgId: string = msg.key?.id ?? '';
+              const phoneJid = msgId ? this.pendingSendJids.get(msgId) : undefined;
+              if (phoneJid && !this.lidToPhone.has(jid)) {
+                this.lidToPhone.set(jid, phoneJid);
+                this.sql`
+                  INSERT INTO whatsapp_lid_map (lid, phone_jid, updated_at)
+                  VALUES (${jid}, ${phoneJid}, NOW())
+                  ON CONFLICT (lid) DO UPDATE SET phone_jid = EXCLUDED.phone_jid, updated_at = NOW()
+                `.catch(() => {});
+                this.diag(`[Baileys] LID ${jid} → ${phoneJid} descoberto via echo de envio (msgId=${msgId})`);
+              }
+            }
+            this.msgsIgnoradas++;
+            continue;
+          }
+          if (!hasMsg) {
             this.msgsIgnoradas++;
             continue;
           }
@@ -442,7 +462,15 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const numero = telefone.replace('+', '').replace(/\D/g, '');
     const jid = `${numero}@s.whatsapp.net`;
 
-    await this.socket.sendMessage(jid, { text: texto });
+    const enviado = await this.socket.sendMessage(jid, { text: texto });
+
+    // Registra msgId→phone para capturar o LID quando o echo fromMe=true chegar
+    const msgId: string = enviado?.key?.id ?? '';
+    if (msgId) {
+      this.pendingSendJids.set(msgId, jid);
+      setTimeout(() => this.pendingSendJids.delete(msgId), 60_000);
+    }
+
     this.logger.log(`Mensagem enviada para ${telefone}`);
   }
 
