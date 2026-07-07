@@ -125,7 +125,8 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
             `.catch(() => {});
           }
         }
-        if (novos > 0) this.diag(`[Baileys] contacts: ${novos} LID(s) persistidos (mapa total: ${this.lidToPhone.size})`);
+        const semLid = contacts.filter((c: any) => c.id && !c.lid).length;
+        this.diag(`[Baileys] contacts sync: ${contacts.length} total, ${novos} com LID salvo, ${semLid} sem LID`);
       };
       console.log('[REGISTERING LISTENER]', 'contacts.upsert', new Date().toISOString());
       this.socket.ev.on('contacts.upsert', salvarLids);
@@ -517,7 +518,20 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     const enviado = await this.socket.sendMessage(jid, { text: texto });
 
-    // Também registra msgId→phone como fallback para capturar LID via echo
+    // Captura LID imediatamente: quando WA resolve @s.whatsapp.net → @lid no envio,
+    // o key.remoteJid retornado já é o @lid. Essa é a fonte mais confiável do mapeamento.
+    const sentJid: string = enviado?.key?.remoteJid ?? '';
+    if (sentJid.endsWith('@lid') && !this.lidToPhone.has(sentJid)) {
+      this.lidToPhone.set(sentJid, jid);
+      this.sql`
+        INSERT INTO whatsapp_lid_map (lid, phone_jid, updated_at)
+        VALUES (${sentJid}, ${jid}, NOW())
+        ON CONFLICT (lid) DO UPDATE SET phone_jid = EXCLUDED.phone_jid, updated_at = NOW()
+      `.catch(() => {});
+      this.diag(`[Baileys] LID capturado ao enviar: ${sentJid} → ${jid}`);
+    }
+
+    // Fallback: registra msgId→phone para capturar LID via eco (caso sentJid seja @s.whatsapp.net)
     const msgId: string = enviado?.key?.id ?? '';
     if (msgId) {
       this.pendingSendJids.set(msgId, jid);
