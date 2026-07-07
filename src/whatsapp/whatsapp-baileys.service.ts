@@ -171,8 +171,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       });
 
       this.socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
+        // PRIMEIRA linha — antes de qualquer filtro
         for (const m of (messages ?? [])) {
-          this.diag(`[RAW UPSERT] type=${type} remoteJid=${m.key?.remoteJid} fromMe=${m.key?.fromMe} hasMessage=${!!m.message} messageStubType=${m.messageStubType ?? 'none'}`);
+          console.log(`[RAW UPSERT] type=${type} remoteJid=${m.key?.remoteJid} fromMe=${m.key?.fromMe} hasMessage=${!!m.message} messageStubType=${m.messageStubType ?? 'none'}`);
         }
         this.diag(`[Baileys] messages.upsert: type=${type} count=${messages?.length ?? 0}`);
 
@@ -230,6 +231,8 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           );
         }
       });
+
+      console.log('[SOCKET EVENTS] listeners registrados: creds.update, contacts.upsert, contacts.update, connection.update, messages.upsert');
     } catch (err: any) {
       this.diag(`[Baileys] ERRO em iniciarSessao: ${err?.message ?? err}`);
       throw err;
