@@ -7,8 +7,13 @@ import {
 } from '@nestjs/common';
 import { DATABASE_CLIENT } from '../database/database.module';
 import { useDatabaseAuthState } from './baileys-auth-state';
+import {
+  normalizarResposta,
+  interpolarVariaveis,
+  MENSAGEM_LEMBRETE_PADRAO,
+  type OpcaoFluxo,
+} from '../fluxo-conversa/fluxo-conversa.types';
 
-// Importações do Baileys via require para compatibilidade CommonJS
 const {
   makeWASocket,
   DisconnectReason,
@@ -41,9 +46,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   private msgsRecebidas = 0;
   private msgsIgnoradas = 0;
   private ultimaMsgEm: string | null = null;
-  // Cache em memória de LID → phoneJid (reconstruído do DB no startup e atualizado durante execução)
   private readonly lidToPhone = new Map<string, string>();
-  // Rastreia msgId → phoneJid para capturar LID via eco fromMe=true quando sentJid não retorna @lid
   private readonly pendingSendJids = new Map<string, string>();
 
   private diag(msg: string) {
@@ -69,16 +72,14 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     this.socket?.end(undefined);
   }
 
+  estaConectado(): boolean {
+    return this.status === 'conectado';
+  }
+
   // ----------------------------------------------------------------
   // LID → telefone: resolução em camadas
   // ----------------------------------------------------------------
 
-  /**
-   * Resolve um @lid JID para @s.whatsapp.net em três camadas:
-   * 1. Cache em memória
-   * 2. Baileys nativo (signalRepository.lidMapping.getPNForLID) — lê de baileys_auth_state
-   * 3. Nossa tabela whatsapp_lid_map (fallback caso auth_state tenha sido limpo)
-   */
   private async resolverLid(lid: string): Promise<string | null> {
     const cached = this.lidToPhone.get(lid);
     if (cached) return cached;
@@ -105,12 +106,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     return null;
   }
 
-  /**
-   * Persiste um mapeamento LID → phoneJid em todas as camadas:
-   * - Cache em memória
-   * - Baileys nativo (signalRepository.lidMapping.storeLIDPNMappings → baileys_auth_state)
-   * - Tabela whatsapp_lid_map com loja_id
-   */
   private async salvarMapeamentoLid(lid: string, phoneJid: string, lojaId?: string | null): Promise<void> {
     this.lidToPhone.set(lid, phoneJid);
 
@@ -143,7 +138,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     this.diag(`[Baileys] LID ${lid} sem mapeamento — mensagem salva como pendente`);
 
-    // Tentativas assíncronas: 5s → 30s → 120s
     for (const [delayMs, tentativa] of [[5_000, 1], [30_000, 2], [120_000, 3]] as const) {
       setTimeout(async () => {
         const resolvido = await this.resolverLid(lid).catch(() => null);
@@ -186,7 +180,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** Executa ao conectar: processa mensagens pendentes cujo LID agora consegue resolver. */
   private async tentarResolverPendentes(): Promise<void> {
     const lids = await this.sql`
       SELECT DISTINCT lid FROM whatsapp_mensagens_pendentes_lid WHERE resolvido_em IS NULL
@@ -231,10 +224,8 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       console.log('[SOCKET CREATED]', new Date().toISOString(), 'user:', this.socket.user?.id);
       this.diag('[Baileys] socket criado — aguardando eventos de conexão');
 
-      console.log('[REGISTERING LISTENER]', 'creds.update', new Date().toISOString());
       this.socket.ev.on('creds.update', saveCreds);
 
-      // Popula cache e garante que o Baileys interno também tem os mapeamentos
       const lidRows = await this.sql`SELECT lid, phone_jid FROM whatsapp_lid_map`;
       for (const r of lidRows) {
         this.lidToPhone.set(r.lid, r.phoneJid);
@@ -246,7 +237,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       }
       this.diag(`[Baileys] LID map carregado do banco: ${lidRows.length} entradas`);
 
-      // contacts.upsert/update: salva LIDs que o Baileys eventualmente expuser
       const salvarLids = async (contacts: any[]) => {
         let novos = 0;
         for (const c of contacts) {
@@ -260,9 +250,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           this.diag(`[Baileys] contacts sync: ${contacts.length} total, ${novos} com LID, ${semLid} sem LID`);
         }
       };
-      console.log('[REGISTERING LISTENER]', 'contacts.upsert', new Date().toISOString());
       this.socket.ev.on('contacts.upsert', salvarLids);
-      console.log('[REGISTERING LISTENER]', 'contacts.update', new Date().toISOString());
       this.socket.ev.on('contacts.update', salvarLids);
 
       console.log('[REGISTERING LISTENER]', 'connection.update', new Date().toISOString());
@@ -281,7 +269,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           this.qrAtual = null;
           this.reconectando = false;
           this.diag('[Baileys] ✅ WhatsApp conectado');
-          // Tenta processar mensagens que ficaram pendentes por LID não resolvido
           this.tentarResolverPendentes().catch(() => {});
         }
 
@@ -296,7 +283,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           this.diag(`[Baileys] conexão fechada — statusCode=${statusCode} deslogado=${deslogado} erro="${errorMsg}"`);
 
           if (deslogado) {
-            this.diag('[Baileys] loggedOut — limpando creds do banco e reiniciando para gerar novo QR Code');
             this.reconectando = false;
             await this.sql`DELETE FROM baileys_auth_state`.catch((e: any) =>
               this.diag(`[Baileys] erro ao limpar auth state: ${e?.message}`),
@@ -317,7 +303,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         }
         this.diag(`[Baileys] messages.upsert: type=${type} count=${messages?.length ?? 0}`);
 
-        // Captura LID de ecos fromMe=true via pendingSendJids (fallback quando sentJid não era @lid)
         for (const m of (messages ?? [])) {
           if (m.key?.fromMe && m.key?.remoteJid?.endsWith('@lid')) {
             const lid: string = m.key.remoteJid;
@@ -342,7 +327,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           this.diag(`[Baileys] msg: jid=${jid} fromMe=${fromMe} hasMsg=${hasMsg}`);
 
           if (fromMe) {
-            // Eco de envio: captura LID→phone via pendingSendJids quando sentJid não era @lid
             if (jid.endsWith('@lid')) {
               const msgId: string = msg.key?.id ?? '';
               const phoneJid = msgId ? this.pendingSendJids.get(msgId) : undefined;
@@ -373,7 +357,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   }
 
   // ----------------------------------------------------------------
-  // Mensagens recebidas
+  // Motor de mensagens recebidas
   // ----------------------------------------------------------------
 
   private async processarMensagemRecebida(msg: any) {
@@ -385,7 +369,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         this.diag(`[Baileys] LID ${jid} resolvido → ${resolvido}`);
         jid = resolvido;
       } else {
-        // Plano C: não descartar — salvar e tentar resolver assincronamente
         await this.salvarMensagemPendente(jid, msg);
         return;
       }
@@ -414,21 +397,127 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     this.msgsRecebidas++;
     this.ultimaMsgEm = new Date().toISOString();
 
-    const rows = await this.registrarMensagem({
+    await this.registrarMensagem({
       telefone,
       direcao: 'recebida',
       conteudo: texto || `[${tipoMsg}]`,
       whatsappMsgId,
     });
 
-    if (rows === 0) {
-      this.diag(`[Baileys] AVISO: nenhum cliente cadastrado com telefone ${telefone} — mensagem não salva`);
-    } else {
-      this.diag(`[Baileys] mensagem salva: ${rows} linha(s) para ${telefone}`);
+    // Busca cliente para obter loja_id (necessário para sessão e fluxo)
+    const [cliente] = await this.sql`
+      SELECT id, loja_id FROM clientes
+      WHERE telefone = ${telefone} AND deleted_at IS NULL
+      LIMIT 1
+    `;
+
+    if (cliente) {
+      await this.processarComFluxo(cliente.id, cliente.lojaId, texto, telefone);
+    } else if (/^[123]$/.test(texto.trim())) {
+      await this.processarRespostaPorTelefone(texto.trim(), telefone);
+    }
+  }
+
+  /**
+   * Motor de fluxo configurável.
+   * Sessão ativa + fluxo ativo → engine de opcoes.
+   * Caso contrário → comportamento hardcoded (busca último lembrete enviado).
+   */
+  private async processarComFluxo(clienteId: string, lojaId: string, texto: string, telefone: string) {
+    const [sessao] = await this.sql`
+      SELECT id, lembrete_id, fallbacks
+      FROM sessao_conversa
+      WHERE loja_id = ${lojaId} AND cliente_id = ${clienteId} AND expira_em > NOW()
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
+
+    const [fluxo] = await this.sql`
+      SELECT mensagem_fallback, opcoes
+      FROM fluxo_conversa
+      WHERE loja_id = ${lojaId} AND ativo = true
+      LIMIT 1
+    `;
+
+    // Sem sessão ou sem fluxo ativo → comportamento legado
+    if (!sessao || !fluxo) {
+      if (/^[123]$/.test(texto.trim())) {
+        await this.processarRespostaPorTelefone(texto.trim(), telefone);
+      }
+      return;
     }
 
-    if (/^[123]$/.test(texto.trim())) {
-      await this.processarRespostaPorTelefone(texto.trim(), telefone);
+    const gatilho = normalizarResposta(texto);
+    const opcoes = (fluxo.opcoes ?? []) as OpcaoFluxo[];
+    const opcaoMatch = gatilho ? opcoes.find((o) => o.gatilho === gatilho) : null;
+
+    if (!opcaoMatch) {
+      const novosFallbacks = (sessao.fallbacks ?? 0) + 1;
+      await this.sql`
+        UPDATE sessao_conversa SET fallbacks = ${novosFallbacks}, updated_at = NOW() WHERE id = ${sessao.id}
+      `;
+      if (novosFallbacks <= 2) {
+        await this.enviarMensagem(telefone, fluxo.mensagemFallback ?? fluxo.mensagem_fallback, lojaId);
+        this.diag(`[Baileys] fallback ${novosFallbacks}/2 para ${telefone}`);
+      } else {
+        this.diag(`[Baileys] ${novosFallbacks} fallbacks para ${telefone} — parando respostas automáticas`);
+      }
+      return;
+    }
+
+    // Match encontrado!
+    await this.enviarMensagem(telefone, opcaoMatch.mensagem_resposta, lojaId);
+
+    if (opcaoMatch.acao !== 'nenhuma' && sessao.lembreteId) {
+      await this.executarAcaoFluxo(opcaoMatch.acao, sessao.lembreteId, opcaoMatch.acao_params).catch((e: any) =>
+        this.diag(`[Baileys] executarAcaoFluxo falhou: ${e?.message}`),
+      );
+    }
+
+    await this.sql`UPDATE sessao_conversa SET expira_em = NOW(), updated_at = NOW() WHERE id = ${sessao.id}`;
+    this.diag(`[Baileys] sessão ${sessao.id} encerrada após resposta "${gatilho}"`);
+  }
+
+  private async executarAcaoFluxo(acao: string, lembreteId: string, acoParams?: any): Promise<void> {
+    const [lembrete] = await this.sql`
+      SELECT l.id, l.loja_id, l.ciclo_id,
+             cr.cliente_id, cr.produto_id, cr.quantidade
+      FROM lembretes l
+      JOIN ciclos_recompra cr ON cr.id = l.ciclo_id
+      WHERE l.id = ${lembreteId}
+    `;
+    if (!lembrete) return;
+
+    switch (acao) {
+      case 'registrar_pedido':
+        await this.sql`
+          INSERT INTO pedidos (loja_id, lembrete_id, cliente_id, produto_id, quantidade, status)
+          VALUES (${lembrete.lojaId}, ${lembrete.id}, ${lembrete.clienteId}, ${lembrete.produtoId}, ${lembrete.quantidade ?? 1}, 'pendente')
+        `;
+        await this.sql`UPDATE lembretes SET status='respondido', updated_at=NOW() WHERE id=${lembrete.id}`;
+        break;
+
+      case 'adiar_lembrete': {
+        const dias = parseInt(String(acoParams?.dias ?? 7), 10);
+        await this.sql`
+          UPDATE ciclos_recompra
+          SET proxima_notificacao = NOW() + (${dias} * INTERVAL '1 day'), updated_at = NOW()
+          WHERE id = ${lembrete.cicloId}
+        `;
+        await this.sql`UPDATE lembretes SET status='respondido', updated_at=NOW() WHERE id=${lembrete.id}`;
+        break;
+      }
+
+      case 'cancelar_ciclo': {
+        const codigo = `RET-${Date.now().toString(36).toUpperCase()}`;
+        await this.sql`
+          INSERT INTO cupons (loja_id, cliente_id, codigo, desconto_pct, valido_ate)
+          VALUES (${lembrete.lojaId}, ${lembrete.clienteId}, ${codigo}, 10.00, CURRENT_DATE + INTERVAL '30 days')
+        `;
+        await this.sql`UPDATE ciclos_recompra SET ativo=FALSE, updated_at=NOW() WHERE id=${lembrete.cicloId}`;
+        await this.sql`UPDATE lembretes SET status='respondido', updated_at=NOW() WHERE id=${lembrete.id}`;
+        break;
+      }
     }
   }
 
@@ -437,41 +526,19 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const acao = acaoMap[opcao];
     if (!acao) return;
 
-    this.diag(`[Baileys] processarRespostaPorTelefone: opcao="${opcao}" telefone="${telefone}"`);
-
     const [cliente] = await this.sql`
       SELECT id, nome FROM clientes WHERE telefone = ${telefone} AND deleted_at IS NULL LIMIT 1
     `;
-    if (!cliente) {
-      this.diag(`[Baileys] AVISO: cliente não encontrado para telefone "${telefone}" — verifique o formato (+55XXXXXXXXXXX)`);
-      return;
-    }
-    this.diag(`[Baileys] cliente encontrado: ${cliente.nome} (id=${cliente.id})`);
+    if (!cliente) return;
 
     const [lembrete] = await this.sql`
-      SELECT l.id, l.status, l.enviado_em
-      FROM lembretes l
+      SELECT l.id FROM lembretes l
       JOIN ciclos_recompra cr ON cr.id = l.ciclo_id
-      WHERE cr.cliente_id = ${cliente.id}
-        AND l.status = 'enviado'
-      ORDER BY l.enviado_em DESC
-      LIMIT 1
+      WHERE cr.cliente_id = ${cliente.id} AND l.status = 'enviado'
+      ORDER BY l.enviado_em DESC LIMIT 1
     `;
+    if (!lembrete) return;
 
-    if (!lembrete) {
-      const recentes = await this.sql`
-        SELECT l.id, l.status, l.enviado_em
-        FROM lembretes l
-        JOIN ciclos_recompra cr ON cr.id = l.ciclo_id
-        WHERE cr.cliente_id = ${cliente.id}
-        ORDER BY l.enviado_em DESC NULLS LAST
-        LIMIT 3
-      `;
-      this.diag(`[Baileys] nenhum lembrete com status=enviado para ${cliente.nome}. Últimos: ${JSON.stringify(recentes.map((r: any) => ({ id: r.id, status: r.status, em: r.enviadoEm })))}`);
-      return;
-    }
-
-    this.diag(`[Baileys] resposta "${opcao}" → ação "${acao}" para lembrete ${lembrete.id} (enviado_em=${lembrete.enviadoEm})`);
     await this.processarResposta(acao, lembrete.id, telefone);
   }
 
@@ -483,21 +550,13 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       JOIN ciclos_recompra cr ON cr.id = l.ciclo_id
       WHERE l.id = ${lembreteId}
     `;
-
-    if (!lembrete) {
-      this.logger.warn(`Lembrete ${lembreteId} não encontrado`);
-      return;
-    }
+    if (!lembrete) return;
 
     switch (acao) {
       case 'pedir':
         await this.sql`
           INSERT INTO pedidos (loja_id, lembrete_id, cliente_id, produto_id, quantidade, status)
-          VALUES (
-            ${lembrete.lojaId}, ${lembrete.id},
-            ${lembrete.clienteId}, ${lembrete.produtoId},
-            ${lembrete.quantidade ?? 1}, 'pendente'
-          )
+          VALUES (${lembrete.lojaId}, ${lembrete.id}, ${lembrete.clienteId}, ${lembrete.produtoId}, ${lembrete.quantidade ?? 1}, 'pendente')
         `;
         await this.sql`UPDATE lembretes SET status='respondido', updated_at=NOW() WHERE id=${lembrete.id}`;
         break;
@@ -515,14 +574,10 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         const codigo = `RET-${Date.now().toString(36).toUpperCase()}`;
         await this.sql`
           INSERT INTO cupons (loja_id, cliente_id, codigo, desconto_pct, valido_ate)
-          VALUES (
-            ${lembrete.lojaId}, ${lembrete.clienteId},
-            ${codigo}, 10.00, CURRENT_DATE + INTERVAL '30 days'
-          )
+          VALUES (${lembrete.lojaId}, ${lembrete.clienteId}, ${codigo}, 10.00, CURRENT_DATE + INTERVAL '30 days')
         `;
         await this.sql`UPDATE ciclos_recompra SET ativo=FALSE, updated_at=NOW() WHERE id=${lembrete.cicloId}`;
         await this.sql`UPDATE lembretes SET status='respondido', updated_at=NOW() WHERE id=${lembrete.id}`;
-        this.logger.log(`Cupom de retenção ${codigo} gerado`);
         break;
       }
     }
@@ -563,9 +618,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   // Envio de mensagens
   // ----------------------------------------------------------------
 
-  private static readonly TEMPLATE_PADRAO =
-    `Oi, {nome}! 👋\n\nJá está na hora de repor *{produto}*{quantidade}. Posso te ajudar?\n\nResponda:\n1️⃣ *1* — Quero pedir\n2️⃣ *2* — Me avise depois\n3️⃣ *3* — Não quero mais`;
-
   async enviarLembrete(params: {
     telefone: string;
     clienteNome: string;
@@ -577,28 +629,46 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   }) {
     const { telefone, clienteNome, produtoNome, quantidade, unidade, lembreteId, lojaId } = params;
 
-    const [loja] = await this.sql`SELECT nome, modelo_mensagem FROM lojas WHERE id = ${lojaId}`;
+    // Carrega fluxo da loja para usar mensagem_lembrete configurada
+    const [fluxo] = await this.sql`
+      SELECT mensagem_lembrete FROM fluxo_conversa WHERE loja_id = ${lojaId} AND ativo = true LIMIT 1
+    `;
 
-    const template: string = loja?.modeloMensagem || WhatsappBaileysService.TEMPLATE_PADRAO;
+    // Fallback encadeado: fluxo → lojas.modelo_mensagem → TEMPLATE_PADRAO
+    let templateBase: string = fluxo?.mensagemLembrete ?? fluxo?.mensagem_lembrete;
+    if (!templateBase) {
+      const [loja] = await this.sql`SELECT modelo_mensagem FROM lojas WHERE id = ${lojaId}`;
+      templateBase = loja?.modeloMensagem ?? MENSAGEM_LEMBRETE_PADRAO;
+    }
 
-    const qtdTexto = quantidade
-      ? ` (${quantidade}${unidade ? ' ' + unidade : ''})`
-      : '';
+    const qtdTexto = quantidade ? ` (${quantidade}${unidade ? ' ' + unidade : ''})` : '';
 
-    const texto = template
-      .replace(/\{nome\}/g, clienteNome)
-      .replace(/\{produto\}/g, produtoNome)
-      .replace(/\{quantidade\}/g, qtdTexto)
-      .replace(/\{loja\}/g, loja?.nome ?? '');
+    const [loja] = await this.sql`SELECT nome FROM lojas WHERE id = ${lojaId}`;
+    const texto = interpolarVariaveis(templateBase, {
+      nome: clienteNome,
+      produto: produtoNome,
+      quantidade: qtdTexto,
+      loja: loja?.nome ?? '',
+    });
 
     await this.enviarMensagem(telefone, texto, lojaId);
+    await this.registrarMensagem({ telefone, direcao: 'enviada', conteudo: texto, lembreteId });
 
-    await this.registrarMensagem({
-      telefone,
-      direcao: 'enviada',
-      conteudo: texto,
-      lembreteId,
-    });
+    // Cria/renova sessão de conversa para capturar a resposta do cliente
+    const [cliente] = await this.sql`
+      SELECT id FROM clientes
+      WHERE telefone = ${telefone} AND loja_id = ${lojaId} AND deleted_at IS NULL LIMIT 1
+    `;
+    if (cliente) {
+      await this.sql`
+        DELETE FROM sessao_conversa WHERE loja_id = ${lojaId} AND cliente_id = ${cliente.id} AND expira_em > NOW()
+      `;
+      await this.sql`
+        INSERT INTO sessao_conversa (loja_id, cliente_id, lembrete_id, expira_em)
+        VALUES (${lojaId}, ${cliente.id}, ${lembreteId}, NOW() + INTERVAL '48 hours')
+      `;
+      this.diag(`[Baileys] sessão criada para cliente ${cliente.id} (lembrete ${lembreteId})`);
+    }
   }
 
   async enviarMensagem(telefone: string, texto: string, lojaId?: string) {
@@ -611,14 +681,12 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     const enviado = await this.socket.sendMessage(jid, { text: texto });
 
-    // Via A: sendMessage retorna key.remoteJid como @lid quando WA resolve internamente
     const sentJid: string = enviado?.key?.remoteJid ?? '';
     if (sentJid.endsWith('@lid')) {
       await this.salvarMapeamentoLid(sentJid, jid, lojaId);
       this.diag(`[Baileys] LID capturado ao enviar: ${sentJid} → ${jid}`);
     }
 
-    // Via B (fallback): registra msgId→phone para capturar LID via eco caso sentJid seja @s.whatsapp.net
     const msgId: string = enviado?.key?.id ?? '';
     if (msgId) {
       this.pendingSendJids.set(msgId, jid);

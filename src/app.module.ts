@@ -9,6 +9,7 @@ import { CiclosModule } from './ciclos/ciclos.module';
 import { LembretesModule } from './lembretes/lembretes.module';
 import { PedidosModule } from './pedidos/pedidos.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
+import { FluxoConversaModule } from './fluxo-conversa/fluxo-conversa.module';
 import { WorkerModule } from './worker/worker.module';
 
 @Module({
@@ -25,6 +26,7 @@ import { WorkerModule } from './worker/worker.module';
     LembretesModule,
     PedidosModule,
     WhatsappModule,
+    FluxoConversaModule,
 
     // Worker: Crons + Filas BullMQ + Processors
     // Responsável por toda a automação de envio de lembretes
