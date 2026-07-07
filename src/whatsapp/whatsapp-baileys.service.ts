@@ -98,8 +98,10 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         logger: LOGGER_SILENCIOSO,
         connectTimeoutMs: 60_000,
       });
+      console.log('[SOCKET CREATED]', new Date().toISOString(), 'user:', this.socket.user?.id);
       this.diag('[Baileys] socket criado — aguardando eventos de conexão');
 
+      console.log('[REGISTERING LISTENER]', 'creds.update', new Date().toISOString());
       this.socket.ev.on('creds.update', saveCreds);
 
       // Carrega mapeamentos LID→telefone persistidos para sobreviver a redeployments
@@ -125,9 +127,12 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         }
         if (novos > 0) this.diag(`[Baileys] contacts: ${novos} LID(s) persistidos (mapa total: ${this.lidToPhone.size})`);
       };
+      console.log('[REGISTERING LISTENER]', 'contacts.upsert', new Date().toISOString());
       this.socket.ev.on('contacts.upsert', salvarLids);
+      console.log('[REGISTERING LISTENER]', 'contacts.update', new Date().toISOString());
       this.socket.ev.on('contacts.update', salvarLids);
 
+      console.log('[REGISTERING LISTENER]', 'connection.update', new Date().toISOString());
       this.socket.ev.on('connection.update', async (update: any) => {
         const { connection, lastDisconnect, qr } = update;
         this.diag(`[Baileys] connection.update: connection=${connection ?? 'n/a'} qr=${qr ? 'SIM' : 'não'}`);
@@ -170,6 +175,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         }
       });
 
+      console.log('[REGISTERING LISTENER]', 'messages.upsert', new Date().toISOString());
       this.socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
         // PRIMEIRA linha — antes de qualquer filtro
         for (const m of (messages ?? [])) {
@@ -232,7 +238,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         }
       });
 
-      console.log('[SOCKET EVENTS] listeners registrados: creds.update, contacts.upsert, contacts.update, connection.update, messages.upsert');
     } catch (err: any) {
       this.diag(`[Baileys] ERRO em iniciarSessao: ${err?.message ?? err}`);
       throw err;
