@@ -125,8 +125,10 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
             `.catch(() => {});
           }
         }
-        const semLid = contacts.filter((c: any) => c.id && !c.lid).length;
-        this.diag(`[Baileys] contacts sync: ${contacts.length} total, ${novos} com LID salvo, ${semLid} sem LID`);
+        if (novos > 0 || contacts.length > 5) {
+          const semLid = contacts.filter((c: any) => c.id && !c.lid).length;
+          this.diag(`[Baileys] contacts sync: ${contacts.length} total, ${novos} com LID salvo, ${semLid} sem LID`);
+        }
       };
       console.log('[REGISTERING LISTENER]', 'contacts.upsert', new Date().toISOString());
       this.socket.ev.on('contacts.upsert', salvarLids);
