@@ -29,8 +29,26 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
           CREATE TABLE IF NOT EXISTS whatsapp_lid_map (
             lid        TEXT PRIMARY KEY,
             phone_jid  TEXT NOT NULL,
+            loja_id    UUID,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
+        `.catch(() => {});
+        await sql`ALTER TABLE whatsapp_lid_map ADD COLUMN IF NOT EXISTS loja_id UUID`.catch(() => {});
+        await sql`
+          CREATE TABLE IF NOT EXISTS whatsapp_mensagens_pendentes_lid (
+            id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            lid          TEXT NOT NULL,
+            msg_raw      JSONB NOT NULL,
+            recebido_em  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            tentativas   INT NOT NULL DEFAULT 0,
+            resolvido_em TIMESTAMPTZ,
+            loja_id      UUID
+          )
+        `.catch(() => {});
+        await sql`
+          CREATE INDEX IF NOT EXISTS idx_pendentes_lid_unresolved
+          ON whatsapp_mensagens_pendentes_lid (lid)
+          WHERE resolvido_em IS NULL
         `.catch(() => {});
 
         return sql;

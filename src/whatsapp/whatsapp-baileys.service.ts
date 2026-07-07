@@ -14,6 +14,7 @@ const {
   DisconnectReason,
   fetchLatestBaileysVersion,
   Browsers,
+  jidNormalizedUser,
 } = require('@whiskeysockets/baileys');
 
 const LOGGER_SILENCIOSO = {
@@ -40,9 +41,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   private msgsRecebidas = 0;
   private msgsIgnoradas = 0;
   private ultimaMsgEm: string | null = null;
-  // Mapa LID → JID telefone: necessário porque WhatsApp envia @lid em vez de @s.whatsapp.net
+  // Cache em memória de LID → phoneJid (reconstruído do DB no startup e atualizado durante execução)
   private readonly lidToPhone = new Map<string, string>();
-  // Rastreia msgId → phoneJid para descobrir LID a partir do echo fromMe=true
+  // Rastreia msgId → phoneJid para capturar LID via eco fromMe=true quando sentJid não retorna @lid
   private readonly pendingSendJids = new Map<string, string>();
 
   private diag(msg: string) {
@@ -69,11 +70,140 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   }
 
   // ----------------------------------------------------------------
+  // LID → telefone: resolução em camadas
+  // ----------------------------------------------------------------
+
+  /**
+   * Resolve um @lid JID para @s.whatsapp.net em três camadas:
+   * 1. Cache em memória
+   * 2. Baileys nativo (signalRepository.lidMapping.getPNForLID) — lê de baileys_auth_state
+   * 3. Nossa tabela whatsapp_lid_map (fallback caso auth_state tenha sido limpo)
+   */
+  private async resolverLid(lid: string): Promise<string | null> {
+    const cached = this.lidToPhone.get(lid);
+    if (cached) return cached;
+
+    if (this.socket?.signalRepository?.lidMapping) {
+      try {
+        const pnJid: string | null = await this.socket.signalRepository.lidMapping.getPNForLID(lid);
+        if (pnJid) {
+          const normalizado: string = jidNormalizedUser(pnJid) ?? pnJid;
+          this.lidToPhone.set(lid, normalizado);
+          return normalizado;
+        }
+      } catch (e: any) {
+        this.diag(`[Baileys] getPNForLID(${lid}) falhou: ${e?.message}`);
+      }
+    }
+
+    const [row] = await this.sql`SELECT phone_jid FROM whatsapp_lid_map WHERE lid = ${lid}`;
+    if (row?.phoneJid) {
+      this.lidToPhone.set(lid, row.phoneJid);
+      return row.phoneJid;
+    }
+
+    return null;
+  }
+
+  /**
+   * Persiste um mapeamento LID → phoneJid em todas as camadas:
+   * - Cache em memória
+   * - Baileys nativo (signalRepository.lidMapping.storeLIDPNMappings → baileys_auth_state)
+   * - Tabela whatsapp_lid_map com loja_id
+   */
+  private async salvarMapeamentoLid(lid: string, phoneJid: string, lojaId?: string | null): Promise<void> {
+    this.lidToPhone.set(lid, phoneJid);
+
+    if (this.socket?.signalRepository?.lidMapping) {
+      await this.socket.signalRepository.lidMapping
+        .storeLIDPNMappings([{ lid, pn: phoneJid }])
+        .catch((e: any) => this.diag(`[Baileys] storeLIDPNMappings falhou: ${e?.message}`));
+    }
+
+    this.sql`
+      INSERT INTO whatsapp_lid_map (lid, phone_jid, loja_id, updated_at)
+      VALUES (${lid}, ${phoneJid}, ${lojaId ?? null}, NOW())
+      ON CONFLICT (lid) DO UPDATE
+        SET phone_jid = EXCLUDED.phone_jid,
+            loja_id   = COALESCE(EXCLUDED.loja_id, whatsapp_lid_map.loja_id),
+            updated_at = NOW()
+    `.catch(() => {});
+  }
+
+  // ----------------------------------------------------------------
+  // Plano C: mensagens com LID não resolvido
+  // ----------------------------------------------------------------
+
+  private async salvarMensagemPendente(lid: string, msg: any): Promise<void> {
+    const msgRaw = JSON.stringify(msg);
+    await this.sql`
+      INSERT INTO whatsapp_mensagens_pendentes_lid (lid, msg_raw, recebido_em)
+      VALUES (${lid}, ${msgRaw}, NOW())
+    `.catch((e: any) => this.diag(`[Baileys] erro ao salvar msg pendente: ${e?.message}`));
+
+    this.diag(`[Baileys] LID ${lid} sem mapeamento — mensagem salva como pendente`);
+
+    // Tentativas assíncronas: 5s → 30s → 120s
+    for (const [delayMs, tentativa] of [[5_000, 1], [30_000, 2], [120_000, 3]] as const) {
+      setTimeout(async () => {
+        const resolvido = await this.resolverLid(lid).catch(() => null);
+        if (resolvido) {
+          this.diag(`[Baileys] LID ${lid} resolvido na tentativa ${tentativa} → ${resolvido}`);
+          await this.processarPendentesDoLid(lid, resolvido).catch(() => {});
+        } else {
+          this.diag(`[Baileys] LID ${lid} ainda sem mapeamento (tentativa ${tentativa})`);
+        }
+      }, delayMs);
+    }
+  }
+
+  private async processarPendentesDoLid(lid: string, phoneJid: string): Promise<void> {
+    const pendentes = await this.sql`
+      SELECT id, msg_raw
+      FROM whatsapp_mensagens_pendentes_lid
+      WHERE lid = ${lid} AND resolvido_em IS NULL
+      ORDER BY recebido_em
+    `;
+    if (pendentes.length === 0) return;
+
+    this.diag(`[Baileys] processando ${pendentes.length} mensagem(ns) pendente(s) de ${lid} → ${phoneJid}`);
+    for (const p of pendentes) {
+      try {
+        const msg = JSON.parse(p.msgRaw);
+        msg.key.remoteJid = phoneJid;
+        await this.processarMensagemRecebida(msg);
+        await this.sql`
+          UPDATE whatsapp_mensagens_pendentes_lid
+          SET resolvido_em = NOW(), tentativas = tentativas + 1
+          WHERE id = ${p.id}
+        `;
+      } catch (e: any) {
+        this.diag(`[Baileys] erro ao processar pendente ${p.id}: ${e?.message}`);
+        await this.sql`
+          UPDATE whatsapp_mensagens_pendentes_lid SET tentativas = tentativas + 1 WHERE id = ${p.id}
+        `.catch(() => {});
+      }
+    }
+  }
+
+  /** Executa ao conectar: processa mensagens pendentes cujo LID agora consegue resolver. */
+  private async tentarResolverPendentes(): Promise<void> {
+    const lids = await this.sql`
+      SELECT DISTINCT lid FROM whatsapp_mensagens_pendentes_lid WHERE resolvido_em IS NULL
+    `;
+    for (const { lid } of lids) {
+      const resolvido = await this.resolverLid(lid).catch(() => null);
+      if (resolvido) {
+        await this.processarPendentesDoLid(lid, resolvido).catch(() => {});
+      }
+    }
+  }
+
+  // ----------------------------------------------------------------
   // Conexão Baileys
   // ----------------------------------------------------------------
 
   private async iniciarSessao() {
-    // Reseta a flag para que reconexões futuras sejam agendadas corretamente
     this.reconectando = false;
     try {
       this.diag('[Baileys] carregando auth state do PostgreSQL…');
@@ -104,30 +234,30 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       console.log('[REGISTERING LISTENER]', 'creds.update', new Date().toISOString());
       this.socket.ev.on('creds.update', saveCreds);
 
-      // Carrega mapeamentos LID→telefone persistidos para sobreviver a redeployments
+      // Popula cache e garante que o Baileys interno também tem os mapeamentos
       const lidRows = await this.sql`SELECT lid, phone_jid FROM whatsapp_lid_map`;
       for (const r of lidRows) {
         this.lidToPhone.set(r.lid, r.phoneJid);
       }
+      if (lidRows.length > 0 && this.socket?.signalRepository?.lidMapping) {
+        await this.socket.signalRepository.lidMapping
+          .storeLIDPNMappings(lidRows.map((r: any) => ({ lid: r.lid, pn: r.phoneJid })))
+          .catch(() => {});
+      }
       this.diag(`[Baileys] LID map carregado do banco: ${lidRows.length} entradas`);
 
-      // Persiste LID→telefone em contacts.upsert e contacts.update
+      // contacts.upsert/update: salva LIDs que o Baileys eventualmente expuser
       const salvarLids = async (contacts: any[]) => {
         let novos = 0;
         for (const c of contacts) {
           if (c.lid && c.id) {
-            this.lidToPhone.set(c.lid, c.id);
+            await this.salvarMapeamentoLid(c.lid, c.id).catch(() => {});
             novos++;
-            this.sql`
-              INSERT INTO whatsapp_lid_map (lid, phone_jid, updated_at)
-              VALUES (${c.lid}, ${c.id}, NOW())
-              ON CONFLICT (lid) DO UPDATE SET phone_jid = EXCLUDED.phone_jid, updated_at = NOW()
-            `.catch(() => {});
           }
         }
         if (novos > 0 || contacts.length > 5) {
           const semLid = contacts.filter((c: any) => c.id && !c.lid).length;
-          this.diag(`[Baileys] contacts sync: ${contacts.length} total, ${novos} com LID salvo, ${semLid} sem LID`);
+          this.diag(`[Baileys] contacts sync: ${contacts.length} total, ${novos} com LID, ${semLid} sem LID`);
         }
       };
       console.log('[REGISTERING LISTENER]', 'contacts.upsert', new Date().toISOString());
@@ -151,6 +281,8 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           this.qrAtual = null;
           this.reconectando = false;
           this.diag('[Baileys] ✅ WhatsApp conectado');
+          // Tenta processar mensagens que ficaram pendentes por LID não resolvido
+          this.tentarResolverPendentes().catch(() => {});
         }
 
         if (connection === 'close') {
@@ -180,26 +312,20 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
       console.log('[REGISTERING LISTENER]', 'messages.upsert', new Date().toISOString());
       this.socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
-        // PRIMEIRA linha — antes de qualquer filtro
         for (const m of (messages ?? [])) {
           console.log(`[RAW UPSERT] type=${type} remoteJid=${m.key?.remoteJid} fromMe=${m.key?.fromMe} hasMessage=${!!m.message} messageStubType=${m.messageStubType ?? 'none'}`);
         }
         this.diag(`[Baileys] messages.upsert: type=${type} count=${messages?.length ?? 0}`);
 
-        // Captura LID de echos fromMe=true ANTES de descartar type=append
+        // Captura LID de ecos fromMe=true via pendingSendJids (fallback quando sentJid não era @lid)
         for (const m of (messages ?? [])) {
           if (m.key?.fromMe && m.key?.remoteJid?.endsWith('@lid')) {
             const lid: string = m.key.remoteJid;
             const mid: string = m.key?.id ?? '';
             const phoneJid = mid ? this.pendingSendJids.get(mid) : undefined;
             if (phoneJid && !this.lidToPhone.has(lid)) {
-              this.lidToPhone.set(lid, phoneJid);
-              this.sql`
-                INSERT INTO whatsapp_lid_map (lid, phone_jid, updated_at)
-                VALUES (${lid}, ${phoneJid}, NOW())
-                ON CONFLICT (lid) DO UPDATE SET phone_jid = EXCLUDED.phone_jid, updated_at = NOW()
-              `.catch(() => {});
-              this.diag(`[Baileys] LID ${lid} → ${phoneJid} via echo (type=${type})`);
+              await this.salvarMapeamentoLid(lid, phoneJid);
+              this.diag(`[Baileys] LID ${lid} → ${phoneJid} via eco (type=${type})`);
             }
           }
         }
@@ -208,33 +334,32 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           this.msgsIgnoradas++;
           return;
         }
+
         for (const msg of messages) {
           const jid = msg.key?.remoteJid ?? '';
           const fromMe = msg.key?.fromMe ?? false;
           const hasMsg = !!msg.message;
           this.diag(`[Baileys] msg: jid=${jid} fromMe=${fromMe} hasMsg=${hasMsg}`);
+
           if (fromMe) {
-            // Aproveita o echo de mensagens enviadas para descobrir LID→phone
+            // Eco de envio: captura LID→phone via pendingSendJids quando sentJid não era @lid
             if (jid.endsWith('@lid')) {
               const msgId: string = msg.key?.id ?? '';
               const phoneJid = msgId ? this.pendingSendJids.get(msgId) : undefined;
               if (phoneJid && !this.lidToPhone.has(jid)) {
-                this.lidToPhone.set(jid, phoneJid);
-                this.sql`
-                  INSERT INTO whatsapp_lid_map (lid, phone_jid, updated_at)
-                  VALUES (${jid}, ${phoneJid}, NOW())
-                  ON CONFLICT (lid) DO UPDATE SET phone_jid = EXCLUDED.phone_jid, updated_at = NOW()
-                `.catch(() => {});
-                this.diag(`[Baileys] LID ${jid} → ${phoneJid} descoberto via echo de envio (msgId=${msgId})`);
+                await this.salvarMapeamentoLid(jid, phoneJid);
+                this.diag(`[Baileys] LID ${jid} → ${phoneJid} via eco de envio (msgId=${msgId})`);
               }
             }
             this.msgsIgnoradas++;
             continue;
           }
+
           if (!hasMsg) {
             this.msgsIgnoradas++;
             continue;
           }
+
           await this.processarMensagemRecebida(msg).catch((err: any) =>
             this.diag(`[Baileys] erro ao processar mensagem: ${err?.message}`),
           );
@@ -254,21 +379,14 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   private async processarMensagemRecebida(msg: any) {
     let jid: string = msg.key.remoteJid ?? '';
 
-    // WhatsApp envia @lid em vez de @s.whatsapp.net para alguns contatos — resolve via mapa
     if (jid.endsWith('@lid')) {
-      let resolvido = this.lidToPhone.get(jid);
-      if (!resolvido) {
-        // Fallback: tenta no banco (o mapa em memória reseta a cada redeploy)
-        const [row] = await this.sql`SELECT phone_jid FROM whatsapp_lid_map WHERE lid = ${jid}`;
-        resolvido = row?.phoneJid;
-        if (resolvido) this.lidToPhone.set(jid, resolvido); // cache
-      }
+      const resolvido = await this.resolverLid(jid);
       if (resolvido) {
-        this.diag(`[Baileys] LID ${jid} resolvido para ${resolvido}`);
+        this.diag(`[Baileys] LID ${jid} resolvido → ${resolvido}`);
         jid = resolvido;
       } else {
-        this.diag(`[Baileys] LID ${jid} sem mapeamento (contato nunca sincronizado) — ignorando`);
-        this.msgsIgnoradas++;
+        // Plano C: não descartar — salvar e tentar resolver assincronamente
+        await this.salvarMensagemPendente(jid, msg);
         return;
       }
     }
@@ -296,7 +414,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     this.msgsRecebidas++;
     this.ultimaMsgEm = new Date().toISOString();
 
-    // Persiste no histórico
     const rows = await this.registrarMensagem({
       telefone,
       direcao: 'recebida',
@@ -310,7 +427,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       this.diag(`[Baileys] mensagem salva: ${rows} linha(s) para ${telefone}`);
     }
 
-    // Interpreta respostas numéricas: 1 = pedir, 2 = depois, 3 = não quero mais
     if (/^[123]$/.test(texto.trim())) {
       await this.processarRespostaPorTelefone(texto.trim(), telefone);
     }
@@ -323,7 +439,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     this.diag(`[Baileys] processarRespostaPorTelefone: opcao="${opcao}" telefone="${telefone}"`);
 
-    // Verifica se o cliente existe no banco com esse telefone
     const [cliente] = await this.sql`
       SELECT id, nome FROM clientes WHERE telefone = ${telefone} AND deleted_at IS NULL LIMIT 1
     `;
@@ -344,7 +459,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     `;
 
     if (!lembrete) {
-      // Diagnóstico extra: mostra os últimos lembretes desse cliente independente do status
       const recentes = await this.sql`
         SELECT l.id, l.status, l.enviado_em
         FROM lembretes l
@@ -477,7 +591,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       .replace(/\{quantidade\}/g, qtdTexto)
       .replace(/\{loja\}/g, loja?.nome ?? '');
 
-    await this.enviarMensagem(telefone, texto);
+    await this.enviarMensagem(telefone, texto, lojaId);
 
     await this.registrarMensagem({
       telefone,
@@ -487,7 +601,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async enviarMensagem(telefone: string, texto: string) {
+  async enviarMensagem(telefone: string, texto: string, lojaId?: string) {
     if (!this.socket || this.status !== 'conectado') {
       throw new Error('WhatsApp não está conectado. Escaneie o QR Code em /configuracoes.');
     }
@@ -495,45 +609,16 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const numero = telefone.replace('+', '').replace(/\D/g, '');
     const jid = `${numero}@s.whatsapp.net`;
 
-    // Resolve LID antes de enviar — garante que a resposta do cliente seja processada
-    const lidJaConhecido = [...this.lidToPhone.values()].some(v => v === jid);
-    if (!lidJaConhecido) {
-      try {
-        const results = await this.socket.onWhatsApp(numero);
-        const info = Array.isArray(results) ? results[0] : results;
-        const lid: string | undefined = info?.lid;
-        if (lid && info?.exists !== false) {
-          this.lidToPhone.set(lid, jid);
-          this.sql`
-            INSERT INTO whatsapp_lid_map (lid, phone_jid, updated_at)
-            VALUES (${lid}, ${jid}, NOW())
-            ON CONFLICT (lid) DO UPDATE SET phone_jid = EXCLUDED.phone_jid, updated_at = NOW()
-          `.catch(() => {});
-          this.diag(`[Baileys] LID via onWhatsApp: ${lid} → ${jid}`);
-        } else {
-          this.diag(`[Baileys] onWhatsApp(${numero}): sem LID no retorno (exists=${info?.exists})`);
-        }
-      } catch (e: any) {
-        this.diag(`[Baileys] onWhatsApp(${numero}) falhou: ${e?.message}`);
-      }
-    }
-
     const enviado = await this.socket.sendMessage(jid, { text: texto });
 
-    // Captura LID imediatamente: quando WA resolve @s.whatsapp.net → @lid no envio,
-    // o key.remoteJid retornado já é o @lid. Essa é a fonte mais confiável do mapeamento.
+    // Via A: sendMessage retorna key.remoteJid como @lid quando WA resolve internamente
     const sentJid: string = enviado?.key?.remoteJid ?? '';
-    if (sentJid.endsWith('@lid') && !this.lidToPhone.has(sentJid)) {
-      this.lidToPhone.set(sentJid, jid);
-      this.sql`
-        INSERT INTO whatsapp_lid_map (lid, phone_jid, updated_at)
-        VALUES (${sentJid}, ${jid}, NOW())
-        ON CONFLICT (lid) DO UPDATE SET phone_jid = EXCLUDED.phone_jid, updated_at = NOW()
-      `.catch(() => {});
+    if (sentJid.endsWith('@lid')) {
+      await this.salvarMapeamentoLid(sentJid, jid, lojaId);
       this.diag(`[Baileys] LID capturado ao enviar: ${sentJid} → ${jid}`);
     }
 
-    // Fallback: registra msgId→phone para capturar LID via eco (caso sentJid seja @s.whatsapp.net)
+    // Via B (fallback): registra msgId→phone para capturar LID via eco caso sentJid seja @s.whatsapp.net
     const msgId: string = enviado?.key?.id ?? '';
     if (msgId) {
       this.pendingSendJids.set(msgId, jid);
