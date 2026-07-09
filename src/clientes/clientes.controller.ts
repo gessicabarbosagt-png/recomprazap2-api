@@ -1,6 +1,6 @@
 import {
   Controller, Get, Post, Patch, Delete,
-  Body, Param, UseGuards, HttpCode, HttpStatus,
+  Body, Param, Query, UseGuards, HttpCode, HttpStatus,
 } from '@nestjs/common';
 import { ClientesService } from './clientes.service';
 import { CriarClienteDto } from './dto/criar-cliente.dto';
@@ -8,8 +8,6 @@ import { AtualizarClienteDto } from './dto/atualizar-cliente.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { UsuarioAtual, UsuarioLogado } from '../common/decorators/usuario-atual.decorator';
 
-// @UseGuards(JwtAuthGuard) na classe protege TODAS as rotas deste controller.
-// Qualquer requisição sem token JWT válido recebe 401 Unauthorized.
 @UseGuards(JwtAuthGuard)
 @Controller('clientes')
 export class ClientesController {
@@ -19,6 +17,16 @@ export class ClientesController {
   @Get()
   listar(@UsuarioAtual() usuario: UsuarioLogado) {
     return this.clientesService.listar(usuario.lojaId);
+  }
+
+  // GET /api/v1/clientes/origens?dias=30
+  // IMPORTANTE: deve vir antes de :id para não ser capturado como ID
+  @Get('origens')
+  origensResumo(
+    @UsuarioAtual() usuario: UsuarioLogado,
+    @Query('dias') dias?: string,
+  ) {
+    return this.clientesService.origensResumo(usuario.lojaId, Number(dias ?? 30));
   }
 
   // GET /api/v1/clientes/:id
@@ -51,7 +59,7 @@ export class ClientesController {
 
   // DELETE /api/v1/clientes/:id
   @Delete(':id')
-  @HttpCode(HttpStatus.NO_CONTENT) // 204: deletado com sucesso, sem body na resposta
+  @HttpCode(HttpStatus.NO_CONTENT)
   remover(
     @Param('id') id: string,
     @UsuarioAtual() usuario: UsuarioLogado,

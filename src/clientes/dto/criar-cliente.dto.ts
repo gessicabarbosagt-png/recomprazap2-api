@@ -1,4 +1,4 @@
-import { IsString, IsEmail, IsOptional, IsBoolean, Matches, MinLength } from 'class-validator';
+import { IsString, IsEmail, IsOptional, IsBoolean, IsObject, Matches, MinLength } from 'class-validator';
 
 export class CriarClienteDto {
   @IsString()
@@ -18,4 +18,12 @@ export class CriarClienteDto {
 
   @IsBoolean()
   consentimentoWhatsapp: boolean;
+
+  @IsString()
+  @IsOptional()
+  origemLead?: string;
+
+  @IsObject()
+  @IsOptional()
+  origemDetalhe?: Record<string, any>;
 }

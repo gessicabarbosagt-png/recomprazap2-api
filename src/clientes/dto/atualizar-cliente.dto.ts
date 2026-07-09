@@ -1,4 +1,4 @@
-import { IsString, IsEmail, IsOptional, IsBoolean, Matches, MinLength } from 'class-validator';
+import { IsString, IsEmail, IsOptional, IsBoolean, IsObject, Matches, MinLength } from 'class-validator';
 
 // No update, todos os campos são opcionais — só atualiza o que for enviado
 export class AtualizarClienteDto {
@@ -21,4 +21,12 @@ export class AtualizarClienteDto {
   @IsBoolean()
   @IsOptional()
   ativo?: boolean;
+
+  @IsString()
+  @IsOptional()
+  origemLead?: string;
+
+  @IsObject()
+  @IsOptional()
+  origemDetalhe?: Record<string, any>;
 }

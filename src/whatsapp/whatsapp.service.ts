@@ -51,9 +51,10 @@ export class WhatsappService {
         m.direcao,
         m.conteudo,
         m.tipo,
-        m.created_at AS "criadoEm",
-        c.nome       AS "clienteNome",
-        c.telefone
+        m.created_at   AS "criadoEm",
+        c.nome         AS "clienteNome",
+        c.telefone,
+        c.origem_lead  AS "origemLead"
       FROM mensagens_whatsapp m
       JOIN clientes c ON c.id = m.cliente_id
       WHERE m.loja_id = ${lojaId}

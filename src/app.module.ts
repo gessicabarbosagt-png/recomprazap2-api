@@ -11,6 +11,7 @@ import { PedidosModule } from './pedidos/pedidos.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { FluxoConversaModule } from './fluxo-conversa/fluxo-conversa.module';
 import { WorkerModule } from './worker/worker.module';
+import { CodigosOrigemModule } from './codigos-origem/codigos-origem.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { WorkerModule } from './worker/worker.module';
     PedidosModule,
     WhatsappModule,
     FluxoConversaModule,
+    CodigosOrigemModule,
 
     // Worker: Crons + Filas BullMQ + Processors
     // Responsável por toda a automação de envio de lembretes

@@ -393,26 +393,99 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const tipoMsg = Object.keys(msg.message ?? {})[0] ?? 'desconhecido';
     const whatsappMsgId: string = msg.key.id ?? '';
 
+    // Extrai contextInfo de todos os tipos de msg — necessário para detectar CTWA (Meta Ads)
+    const contextInfo =
+      msg.message?.extendedTextMessage?.contextInfo ??
+      msg.message?.imageMessage?.contextInfo ??
+      msg.message?.videoMessage?.contextInfo ??
+      msg.message?.documentMessage?.contextInfo ??
+      null;
+
     this.diag(`[Baileys] processando msg de ${telefone} tipo=${tipoMsg} texto="${texto.slice(0, 60)}"`);
     this.msgsRecebidas++;
     this.ultimaMsgEm = new Date().toISOString();
 
-    await this.registrarMensagem({
-      telefone,
-      direcao: 'recebida',
-      conteudo: texto || `[${tipoMsg}]`,
-      whatsappMsgId,
-    });
-
-    // Busca cliente para obter loja_id (necessário para sessão e fluxo)
-    const [cliente] = await this.sql`
+    // Busca cliente existente
+    let [cliente] = await this.sql`
       SELECT id, loja_id FROM clientes
       WHERE telefone = ${telefone} AND deleted_at IS NULL
       LIMIT 1
     `;
 
+    let textoExibido = texto;
+
+    // Auto-cria cliente novo com captura de origem
+    if (!cliente) {
+      const [loja] = await this.sql`SELECT id FROM lojas LIMIT 1`;
+      if (loja) {
+        // Loga o contextInfo completo para descobrir campos reais do CTWA
+        if (contextInfo) {
+          this.logger.log(`[CTWA] contextInfo de ${telefone}: ${JSON.stringify(contextInfo, null, 2)}`);
+        }
+
+        const externalAdReply = contextInfo?.externalAdReply;
+        let origemLead: string | null = null;
+        let origemDetalhe: any = null;
+
+        if (externalAdReply) {
+          // Click-to-WhatsApp via Meta Ads
+          origemLead = 'meta_ads';
+          origemDetalhe = {
+            sourceUrl:              externalAdReply.sourceUrl ?? null,
+            title:                  externalAdReply.title ?? null,
+            body:                   externalAdReply.body ?? null,
+            sourceId:               externalAdReply.sourceId ?? null,
+            sourceType:             externalAdReply.sourceType ?? null,
+            mediaType:              externalAdReply.mediaType ?? null,
+            renderLargerThumbnail:  externalAdReply.renderLargerThumbnail ?? null,
+          };
+          this.diag(`[Baileys] CTWA detectado para ${telefone}: sourceUrl=${origemDetalhe.sourceUrl} title="${origemDetalhe.title}"`);
+        } else if (texto) {
+          // Verifica códigos de rastreio configurados pelo lojista (#codigo → rotulo)
+          const codigos = await this.sql`
+            SELECT codigo, rotulo FROM codigos_origem WHERE loja_id = ${loja.id}
+          `;
+          for (const { codigo, rotulo } of codigos) {
+            const padraoComHash = `#${codigo}`.toLowerCase();
+            if (texto.toLowerCase().includes(padraoComHash)) {
+              origemLead = rotulo;
+              origemDetalhe = { codigo };
+              // Remove o código de rastreio da mensagem exibida no inbox
+              const regex = new RegExp(`#${codigo}`, 'gi');
+              textoExibido = texto.replace(regex, '').trim();
+              this.diag(`[Baileys] código de rastreio #${codigo} detectado → origem="${rotulo}"`);
+              break;
+            }
+          }
+        }
+
+        const [novoCliente] = await this.sql`
+          INSERT INTO clientes
+            (loja_id, nome, telefone, consentimento_whatsapp, origem_lead, origem_detalhe)
+          VALUES (
+            ${loja.id},
+            ${telefone},
+            ${telefone},
+            false,
+            ${origemLead},
+            ${origemDetalhe ?? null}
+          )
+          RETURNING id, loja_id
+        `;
+        cliente = novoCliente;
+        this.diag(`[Baileys] cliente auto-criado: ${telefone} (loja=${loja.id} origem=${origemLead ?? 'desconhecida'})`);
+      }
+    }
+
+    await this.registrarMensagem({
+      telefone,
+      direcao: 'recebida',
+      conteudo: textoExibido || `[${tipoMsg}]`,
+      whatsappMsgId,
+    });
+
     if (cliente) {
-      await this.processarComFluxo(cliente.id, cliente.lojaId, texto, telefone);
+      await this.processarComFluxo(cliente.id, cliente.lojaId, textoExibido || texto, telefone);
     } else if (/^[123]$/.test(texto.trim())) {
       await this.processarRespostaPorTelefone(texto.trim(), telefone);
     }
