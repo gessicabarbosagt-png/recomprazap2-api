@@ -22,6 +22,16 @@ const {
   jidNormalizedUser,
 } = require('@whiskeysockets/baileys');
 
+// Tipos de mensagem sem conteúdo real — ignorados antes de salvar no banco
+const TIPOS_PROTOCOLO = new Set([
+  'messageContextInfo',
+  'protocolMessage',
+  'senderKeyDistributionMessage',
+  'pollUpdateMessage',
+  'appStateSyncKeyRequest',
+  'appStateSyncKeyShare',
+]);
+
 const LOGGER_SILENCIOSO = {
   level: 'silent',
   trace: () => {},
@@ -335,6 +345,12 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
                 this.diag(`[Baileys] LID ${jid} → ${phoneJid} via eco de envio (msgId=${msgId})`);
               }
             }
+            // Captura mensagens enviadas pelo celular; ON CONFLICT descarta ecos do sistema
+            if (hasMsg) {
+              await this.processarMensagemEnviadaCelular(msg).catch((err: any) =>
+                this.diag(`[Baileys] erro ao processar msg celular: ${err?.message}`),
+              );
+            }
             this.msgsIgnoradas++;
             continue;
           }
@@ -394,14 +410,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const whatsappMsgId: string = msg.key.id ?? '';
 
     // Mensagens de protocolo WhatsApp (sem conteúdo real) — ignorar completamente
-    const TIPOS_PROTOCOLO = new Set([
-      'messageContextInfo',
-      'protocolMessage',
-      'senderKeyDistributionMessage',
-      'pollUpdateMessage',
-      'appStateSyncKeyRequest',
-      'appStateSyncKeyShare',
-    ]);
     if (!texto && TIPOS_PROTOCOLO.has(tipoMsg)) {
       this.diag(`[Baileys] msg protocolo ignorada (${tipoMsg}) de ${telefone}`);
       this.msgsIgnoradas++;
@@ -671,17 +679,63 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  // Captura mensagens enviadas pelo próprio lojista via celular.
+  // ON CONFLICT descarta silenciosamente ecos de mensagens já salvas pelo sistema.
+  private async processarMensagemEnviadaCelular(msg: any): Promise<void> {
+    const whatsappMsgId: string = msg.key?.id ?? '';
+    if (!whatsappMsgId) return;
+
+    let jid: string = msg.key.remoteJid ?? '';
+
+    if (jid.endsWith('@lid')) {
+      const resolvido = await this.resolverLid(jid).catch(() => null);
+      if (!resolvido) {
+        this.diag(`[Baileys] celular: LID ${jid} não resolvido — ignorando`);
+        return;
+      }
+      jid = resolvido;
+    }
+
+    if (!jid.endsWith('@s.whatsapp.net')) return;
+
+    const numero = jid.replace('@s.whatsapp.net', '');
+    const telefone = '+' + numero;
+
+    const texto =
+      msg.message?.conversation ??
+      msg.message?.extendedTextMessage?.text ??
+      '';
+
+    const tipoMsg = Object.keys(msg.message ?? {})[0] ?? 'desconhecido';
+
+    if (!texto && TIPOS_PROTOCOLO.has(tipoMsg)) return;
+
+    const salvo = await this.registrarMensagem({
+      telefone,
+      direcao: 'enviada',
+      conteudo: texto || `[${tipoMsg}]`,
+      whatsappMsgId,
+      origem: 'celular',
+    });
+
+    if (salvo > 0) {
+      this.diag(`[Baileys] msg celular salva → ${telefone}: "${texto.slice(0, 60)}"`);
+    }
+    // salvo === 0: eco de msg do sistema (whatsapp_message_id já existia) → ignorado
+  }
+
   private async registrarMensagem(params: {
     telefone: string;
     direcao: 'recebida' | 'enviada';
     conteudo: string;
-    whatsappMsgId?: string;
+    whatsappMsgId?: string | null;
     lembreteId?: string | null;
+    origem?: string | null;
   }): Promise<number> {
     try {
       const result = await this.sql`
         INSERT INTO mensagens_whatsapp
-          (loja_id, lembrete_id, cliente_id, direcao, conteudo, whatsapp_message_id, tipo)
+          (loja_id, lembrete_id, cliente_id, direcao, conteudo, whatsapp_message_id, tipo, origem)
         SELECT
           c.loja_id,
           ${params.lembreteId ?? null},
@@ -689,11 +743,15 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           ${params.direcao}::mensagem_direcao,
           ${params.conteudo},
           ${params.whatsappMsgId ?? null},
-          ${params.direcao === 'enviada' ? 'lembrete' : 'manual'}
+          ${params.lembreteId ? 'lembrete' : 'manual'},
+          ${params.origem ?? null}
         FROM clientes c
         WHERE c.telefone = ${params.telefone}
           AND c.deleted_at IS NULL
         LIMIT 1
+        ON CONFLICT (loja_id, whatsapp_message_id)
+          WHERE whatsapp_message_id IS NOT NULL
+          DO NOTHING
       `;
       return result.count ?? 0;
     } catch (err: any) {
@@ -739,8 +797,11 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       loja: loja?.nome ?? '',
     });
 
-    await this.enviarMensagem(telefone, texto, lojaId);
-    await this.registrarMensagem({ telefone, direcao: 'enviada', conteudo: texto, lembreteId });
+    const msgId = await this.enviarMensagem(telefone, texto, lojaId);
+    await this.registrarMensagem({
+      telefone, direcao: 'enviada', conteudo: texto, lembreteId,
+      whatsappMsgId: msgId || null, origem: 'sistema',
+    });
 
     // Cria/renova sessão de conversa para capturar a resposta do cliente
     const [cliente] = await this.sql`
@@ -759,7 +820,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async enviarMensagem(telefone: string, texto: string, lojaId?: string) {
+  async enviarMensagem(telefone: string, texto: string, lojaId?: string): Promise<string> {
     if (!this.socket || this.status !== 'conectado') {
       throw new Error('WhatsApp não está conectado. Escaneie o QR Code em /configuracoes.');
     }
@@ -782,6 +843,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.logger.log(`Mensagem enviada para ${telefone}`);
+    return msgId;
   }
 
   // ----------------------------------------------------------------

@@ -26,19 +26,23 @@ export class WhatsappService {
 
   // Envia mensagem avulsa (ex: resposta manual do painel)
   async enviarMensagem(lojaId: string, telefone: string, conteudo: string) {
-    await this.baileysService.enviarMensagem(telefone, conteudo);
+    const msgId = await this.baileysService.enviarMensagem(telefone, conteudo);
 
     try {
       await this.sql`
         INSERT INTO mensagens_whatsapp
-          (loja_id, cliente_id, direcao, conteudo, tipo)
-        SELECT ${lojaId}, c.id, 'enviada'::mensagem_direcao, ${conteudo}, 'manual'
+          (loja_id, cliente_id, direcao, conteudo, tipo, origem, whatsapp_message_id)
+        SELECT
+          ${lojaId}, c.id, 'enviada'::mensagem_direcao, ${conteudo}, 'manual', 'painel',
+          ${msgId || null}
         FROM clientes c
         WHERE c.telefone = ${telefone} AND c.loja_id = ${lojaId}
         LIMIT 1
-        ON CONFLICT DO NOTHING
+        ON CONFLICT (loja_id, whatsapp_message_id)
+          WHERE whatsapp_message_id IS NOT NULL
+          DO NOTHING
       `;
-    } catch (err) {
+    } catch (err: any) {
       this.logger.warn('Erro ao registrar mensagem manual no histórico', err?.message);
     }
   }
