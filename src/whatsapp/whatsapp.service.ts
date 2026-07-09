@@ -43,7 +43,7 @@ export class WhatsappService {
     }
   }
 
-  // Lista o histórico de mensagens de uma loja agrupando por telefone
+  // Lista o histórico de mensagens de uma loja (exclui conversas deletadas e msgs de protocolo)
   async listarMensagens(lojaId: string) {
     return this.sql`
       SELECT
@@ -52,14 +52,27 @@ export class WhatsappService {
         m.conteudo,
         m.tipo,
         m.created_at   AS "criadoEm",
+        c.id           AS "clienteId",
         c.nome         AS "clienteNome",
         c.telefone,
         c.origem_lead  AS "origemLead"
       FROM mensagens_whatsapp m
       JOIN clientes c ON c.id = m.cliente_id
-      WHERE m.loja_id = ${lojaId}
+      WHERE m.loja_id    = ${lojaId}
+        AND m.deleted_at IS NULL
       ORDER BY m.created_at ASC
       LIMIT 500
+    `;
+  }
+
+  // Soft-delete de todas as mensagens de uma conversa
+  async excluirConversa(lojaId: string, clienteId: string) {
+    await this.sql`
+      UPDATE mensagens_whatsapp
+      SET deleted_at = NOW()
+      WHERE loja_id   = ${lojaId}
+        AND cliente_id = ${clienteId}
+        AND deleted_at IS NULL
     `;
   }
 }

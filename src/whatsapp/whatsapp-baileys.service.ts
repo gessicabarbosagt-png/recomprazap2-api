@@ -393,6 +393,21 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const tipoMsg = Object.keys(msg.message ?? {})[0] ?? 'desconhecido';
     const whatsappMsgId: string = msg.key.id ?? '';
 
+    // Mensagens de protocolo WhatsApp (sem conteúdo real) — ignorar completamente
+    const TIPOS_PROTOCOLO = new Set([
+      'messageContextInfo',
+      'protocolMessage',
+      'senderKeyDistributionMessage',
+      'pollUpdateMessage',
+      'appStateSyncKeyRequest',
+      'appStateSyncKeyShare',
+    ]);
+    if (!texto && TIPOS_PROTOCOLO.has(tipoMsg)) {
+      this.diag(`[Baileys] msg protocolo ignorada (${tipoMsg}) de ${telefone}`);
+      this.msgsIgnoradas++;
+      return;
+    }
+
     // Extrai contextInfo de todos os tipos de msg — necessário para detectar CTWA (Meta Ads)
     const contextInfo =
       msg.message?.extendedTextMessage?.contextInfo ??
