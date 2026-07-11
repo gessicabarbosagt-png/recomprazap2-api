@@ -428,7 +428,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     this.msgsRecebidas++;
     this.ultimaMsgEm = new Date().toISOString();
 
-    // Busca cliente existente
+    // Busca cliente ativo
     let [cliente] = await this.sql`
       SELECT id, loja_id FROM clientes
       WHERE telefone = ${telefone} AND deleted_at IS NULL
@@ -437,11 +437,30 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     let textoExibido = texto;
 
+    // Se não existe cliente ativo, verifica se há um soft-deletado com esse número
+    if (!cliente) {
+      const [deletado] = await this.sql`
+        SELECT id, loja_id FROM clientes
+        WHERE telefone = ${telefone} AND deleted_at IS NOT NULL
+        LIMIT 1
+      `;
+      if (deletado) {
+        // Reativa: nova mensagem = retorno do contato; preserva histórico e evita violação de unique
+        await this.sql`
+          UPDATE clientes
+          SET deleted_at = NULL, ativo = true, updated_at = NOW()
+          WHERE id = ${deletado.id}
+        `;
+        cliente = { id: deletado.id, lojaId: deletado.lojaId };
+        this.diag(`[Baileys] cliente ${telefone} reativado após soft-delete (id=${deletado.id})`);
+      }
+    }
+
     if (cliente) {
       this.diag(`[Baileys] cliente ${telefone} já existe (id=${cliente.id}) — captura de origem ignorada`);
     }
 
-    // Auto-cria cliente novo com captura de origem
+    // Auto-cria cliente novo com captura de origem (só se não existe nenhum registro, nem deletado)
     if (!cliente) {
       const [loja] = await this.sql`SELECT id FROM lojas LIMIT 1`;
       if (loja) {
