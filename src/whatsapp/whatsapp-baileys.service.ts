@@ -437,6 +437,10 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     let textoExibido = texto;
 
+    if (cliente) {
+      this.diag(`[Baileys] cliente ${telefone} já existe (id=${cliente.id}) — captura de origem ignorada`);
+    }
+
     // Auto-cria cliente novo com captura de origem
     if (!cliente) {
       const [loja] = await this.sql`SELECT id FROM lojas LIMIT 1`;
@@ -476,10 +480,15 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
               // Remove o código de rastreio da mensagem exibida no inbox
               const regex = new RegExp(`#${codigo}`, 'gi');
               textoExibido = texto.replace(regex, '').trim();
-              this.diag(`[Baileys] código de rastreio #${codigo} detectado → origem="${rotulo}"`);
+              this.diag(`[Baileys] ORIGEM DETECTADA: código #${codigo} → "${rotulo}" para ${telefone}`);
               break;
             }
           }
+          if (!origemLead) {
+            this.diag(`[Baileys] NOVO CLIENTE ${telefone} — primeira mensagem sem código de origem: "${texto.slice(0, 80)}"`);
+          }
+        } else {
+          this.diag(`[Baileys] NOVO CLIENTE ${telefone} — primeira mensagem sem texto (tipo=${Object.keys(contextInfo ?? {}).join(',')})`);
         }
 
         const [novoCliente] = await this.sql`

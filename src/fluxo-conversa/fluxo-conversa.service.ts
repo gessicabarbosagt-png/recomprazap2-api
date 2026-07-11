@@ -36,7 +36,14 @@ export class FluxoConversaService {
         WHERE loja_id = ${lojaId}
       `;
 
-      return fluxo ?? padrao;
+      if (!fluxo) return padrao;
+
+      // Coluna opcoes pode ser TEXT em produção (em vez de JSONB) — parse defensivo
+      const opcoes = typeof fluxo.opcoes === 'string'
+        ? JSON.parse(fluxo.opcoes)
+        : (fluxo.opcoes ?? padrao.opcoes);
+
+      return { ...fluxo, opcoes };
     } catch {
       return padrao;
     }

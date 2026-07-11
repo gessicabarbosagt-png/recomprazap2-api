@@ -65,6 +65,11 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
           )
         `.catch(() => {});
 
+        // Garante que opcoes é JSONB (pode ter sido criada como TEXT em versões antigas)
+        await sql`
+          ALTER TABLE fluxo_conversa ALTER COLUMN opcoes TYPE JSONB USING opcoes::jsonb
+        `.catch(() => {});
+
         await sql`
           CREATE TABLE IF NOT EXISTS sessao_conversa (
             id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -116,6 +121,24 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
             AND l.modelo_mensagem IS NOT NULL
             AND l.modelo_mensagem != ${mensagemLembretePadrao}
             AND fc.mensagem_lembrete = ${mensagemLembretePadrao}
+        `.catch(() => {});
+
+        // Seed: códigos de origem padrão para cada loja que ainda não tem nenhum
+        await sql`
+          INSERT INTO codigos_origem (loja_id, codigo, rotulo)
+          SELECT l.id, v.codigo, v.rotulo
+          FROM lojas l
+          CROSS JOIN (VALUES
+            ('instagram', 'Instagram'),
+            ('insta',     'Instagram'),
+            ('google',    'Google'),
+            ('face',      'Facebook'),
+            ('site',      'Site'),
+            ('indicacao', 'Indicação')
+          ) AS v(codigo, rotulo)
+          WHERE NOT EXISTS (
+            SELECT 1 FROM codigos_origem co WHERE co.loja_id = l.id AND co.codigo = v.codigo
+          )
         `.catch(() => {});
 
         return sql;
