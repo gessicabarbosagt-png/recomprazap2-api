@@ -780,12 +780,8 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       SELECT mensagem_lembrete FROM fluxo_conversa WHERE loja_id = ${lojaId} AND ativo = true LIMIT 1
     `;
 
-    // Fallback encadeado: fluxo → lojas.modelo_mensagem → TEMPLATE_PADRAO
-    let templateBase: string = fluxo?.mensagemLembrete ?? fluxo?.mensagem_lembrete;
-    if (!templateBase) {
-      const [loja] = await this.sql`SELECT modelo_mensagem FROM lojas WHERE id = ${lojaId}`;
-      templateBase = loja?.modeloMensagem ?? MENSAGEM_LEMBRETE_PADRAO;
-    }
+    const templateBase: string =
+      fluxo?.mensagemLembrete ?? fluxo?.mensagem_lembrete ?? MENSAGEM_LEMBRETE_PADRAO;
 
     const qtdTexto = quantidade ? ` (${quantidade}${unidade ? ' ' + unidade : ''})` : '';
 

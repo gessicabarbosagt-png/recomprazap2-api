@@ -22,22 +22,24 @@ export class FluxoConversaService {
   ) {}
 
   async buscar(lojaId: string) {
-    const [fluxo] = await this.sql`
-      SELECT id, loja_id, mensagem_lembrete, mensagem_fallback, opcoes, ativo, updated_at
-      FROM fluxo_conversa
-      WHERE loja_id = ${lojaId}
-    `;
+    const padrao = {
+      mensagem_lembrete: MENSAGEM_LEMBRETE_PADRAO,
+      mensagem_fallback: MENSAGEM_FALLBACK_PADRAO,
+      opcoes: OPCOES_PADRAO,
+      ativo: true,
+    };
 
-    if (!fluxo) {
-      return {
-        mensagem_lembrete: MENSAGEM_LEMBRETE_PADRAO,
-        mensagem_fallback: MENSAGEM_FALLBACK_PADRAO,
-        opcoes: OPCOES_PADRAO,
-        ativo: true,
-      };
+    try {
+      const [fluxo] = await this.sql`
+        SELECT id, loja_id, mensagem_lembrete, mensagem_fallback, opcoes, ativo, updated_at
+        FROM fluxo_conversa
+        WHERE loja_id = ${lojaId}
+      `;
+
+      return fluxo ?? padrao;
+    } catch {
+      return padrao;
     }
-
-    return fluxo;
   }
 
   async upsert(lojaId: string, dto: UpsertFluxoDto) {

@@ -106,6 +106,18 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
           WHERE NOT EXISTS (SELECT 1 FROM fluxo_conversa fc WHERE fc.loja_id = l.id)
         `.catch(() => {});
 
+        // Para lojas que já tinham fluxo_conversa com o padrão mas modelo_mensagem customizado:
+        // copia o modelo_mensagem → mensagem_lembrete, sem sobrescrever fluxos já editados.
+        await sql`
+          UPDATE fluxo_conversa fc
+          SET mensagem_lembrete = l.modelo_mensagem, updated_at = NOW()
+          FROM lojas l
+          WHERE fc.loja_id = l.id
+            AND l.modelo_mensagem IS NOT NULL
+            AND l.modelo_mensagem != ${mensagemLembretePadrao}
+            AND fc.mensagem_lembrete = ${mensagemLembretePadrao}
+        `.catch(() => {});
+
         return sql;
       },
     },
