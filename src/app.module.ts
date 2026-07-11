@@ -12,6 +12,7 @@ import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { FluxoConversaModule } from './fluxo-conversa/fluxo-conversa.module';
 import { WorkerModule } from './worker/worker.module';
 import { CodigosOrigemModule } from './codigos-origem/codigos-origem.module';
+import { GatilhosCompraModule } from './gatilhos-compra/gatilhos-compra.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { CodigosOrigemModule } from './codigos-origem/codigos-origem.module';
     WhatsappModule,
     FluxoConversaModule,
     CodigosOrigemModule,
+    GatilhosCompraModule,
 
     // Worker: Crons + Filas BullMQ + Processors
     // Responsável por toda a automação de envio de lembretes

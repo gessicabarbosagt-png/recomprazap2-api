@@ -2,7 +2,7 @@ import {
   Controller, UseGuards, Get, Patch,
   Param, Body, Query, ParseUUIDPipe,
 } from '@nestjs/common';
-import { PedidosService, AtualizarPedidoDto } from './pedidos.service';
+import { PedidosService, AtualizarPedidoDto, AtualizarJornadaDto } from './pedidos.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { UsuarioAtual } from '../common/decorators/usuario-atual.decorator';
 
@@ -23,6 +23,21 @@ export class PedidosController {
     return this.pedidosService.resumoPorPeriodo(usuario.lojaId, parseInt(dias, 10));
   }
 
+  // GET /api/v1/pedidos/resumo-jornada?dias=30
+  @Get('resumo-jornada')
+  resumoJornada(@UsuarioAtual() usuario: any, @Query('dias') dias = '30') {
+    return this.pedidosService.resumoJornada(usuario.lojaId, parseInt(dias, 10));
+  }
+
+  // GET /api/v1/pedidos/cliente/:clienteId/aberto
+  @Get('cliente/:clienteId/aberto')
+  buscarAberto(
+    @Param('clienteId', ParseUUIDPipe) clienteId: string,
+    @UsuarioAtual() usuario: any,
+  ) {
+    return this.pedidosService.buscarAbertoPorCliente(clienteId, usuario.lojaId);
+  }
+
   // GET /api/v1/pedidos/:id
   @Get(':id')
   buscar(
@@ -33,7 +48,6 @@ export class PedidosController {
   }
 
   // PATCH /api/v1/pedidos/:id
-  // Lojista confirma, marca como entregue, define forma de pagamento etc.
   @Patch(':id')
   atualizar(
     @Param('id', ParseUUIDPipe) id: string,
@@ -41,5 +55,15 @@ export class PedidosController {
     @UsuarioAtual() usuario: any,
   ) {
     return this.pedidosService.atualizar(id, dto, usuario.lojaId);
+  }
+
+  // PATCH /api/v1/pedidos/:id/jornada
+  @Patch(':id/jornada')
+  atualizarJornada(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AtualizarJornadaDto,
+    @UsuarioAtual() usuario: any,
+  ) {
+    return this.pedidosService.atualizarJornada(id, usuario.lojaId, dto);
   }
 }

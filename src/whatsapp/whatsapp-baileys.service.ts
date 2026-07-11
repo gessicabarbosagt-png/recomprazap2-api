@@ -43,6 +43,11 @@ const LOGGER_SILENCIOSO = {
   child: () => LOGGER_SILENCIOSO,
 };
 
+// Normaliza string para matching case-insensitive e sem acento
+export function normalizarTexto(s: string): string {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+}
+
 export type StatusConexao = 'desconectado' | 'aguardando' | 'conectado';
 
 @Injectable()
@@ -748,8 +753,72 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     if (salvo > 0) {
       this.diag(`[Baileys] msg celular salva → ${telefone}: "${texto.slice(0, 60)}"`);
+      // Só verifica gatilho para mensagens reais do celular (ecos do sistema têm salvo === 0)
+      if (texto) {
+        const [c] = await this.sql`
+          SELECT loja_id FROM clientes WHERE telefone = ${telefone} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (c) {
+          await this.verificarGatilhoCompra(telefone, texto, c.lojaId).catch((e: any) =>
+            this.diag(`[Baileys] erro em verificarGatilhoCompra: ${e?.message}`),
+          );
+        }
+      }
     }
     // salvo === 0: eco de msg do sistema (whatsapp_message_id já existia) → ignorado
+  }
+
+  // Normaliza texto para comparação case-insensitive sem acento
+  normalizarTexto(s: string): string {
+    return normalizarTexto(s);
+  }
+
+  private async verificarGatilhoCompra(telefone: string, texto: string, lojaId: string): Promise<void> {
+    const textoNorm = this.normalizarTexto(texto);
+
+    const gatilhos = await this.sql`
+      SELECT frase FROM gatilhos_compra WHERE loja_id = ${lojaId} AND ativo = true
+    `;
+    if (!gatilhos.length) return;
+
+    const match = gatilhos.find((g: any) => textoNorm.includes(this.normalizarTexto(g.frase)));
+    if (!match) return;
+
+    this.diag(`[Baileys] GATILHO COMPRA "${match.frase}" ativado por msg de ${telefone}`);
+
+    const [cliente] = await this.sql`
+      SELECT id FROM clientes WHERE telefone = ${telefone} AND deleted_at IS NULL LIMIT 1
+    `;
+    if (!cliente) return;
+
+    const [pedidoAberto] = await this.sql`
+      SELECT id FROM pedidos
+      WHERE cliente_id = ${cliente.id}
+        AND loja_id = ${lojaId}
+        AND deleted_at IS NULL
+        AND status_jornada IN ('aguardando', 'orcamento_enviado')
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
+
+    if (pedidoAberto) {
+      await this.sql`
+        UPDATE pedidos SET
+          status_jornada = 'comprou',
+          confirmado_por = 'palavra_chave',
+          confirmado_em  = NOW(),
+          updated_at     = NOW()
+        WHERE id = ${pedidoAberto.id}
+      `;
+      this.diag(`[Baileys] pedido ${pedidoAberto.id} → comprou (palavra_chave)`);
+    } else {
+      // Venda que não veio de lembrete — cria pedido direto
+      await this.sql`
+        INSERT INTO pedidos (loja_id, cliente_id, status_jornada, confirmado_por, confirmado_em)
+        VALUES (${lojaId}, ${cliente.id}, 'comprou', 'palavra_chave', NOW())
+      `;
+      this.diag(`[Baileys] pedido direto criado para ${telefone} via gatilho`);
+    }
   }
 
   private async registrarMensagem(params: {

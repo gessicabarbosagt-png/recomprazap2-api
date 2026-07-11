@@ -141,6 +141,33 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
           )
         `.catch(() => {});
 
+        // ---- Jornada de compra ----
+        await sql`ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS status_jornada TEXT NOT NULL DEFAULT 'aguardando'`.catch(() => {});
+        await sql`ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS valor NUMERIC(10,2)`.catch(() => {});
+        await sql`ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS confirmado_em TIMESTAMPTZ`.catch(() => {});
+        await sql`ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS confirmado_por TEXT`.catch(() => {});
+        // Pedidos criados via gatilho direto (sem lembrete) não têm produto/quantidade conhecidos
+        await sql`ALTER TABLE pedidos ALTER COLUMN produto_id DROP NOT NULL`.catch(() => {});
+        await sql`ALTER TABLE pedidos ALTER COLUMN quantidade DROP NOT NULL`.catch(() => {});
+
+        await sql`
+          CREATE TABLE IF NOT EXISTS gatilhos_compra (
+            id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            loja_id    UUID NOT NULL,
+            frase      TEXT NOT NULL,
+            ativo      BOOLEAN NOT NULL DEFAULT false,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `.catch(() => {});
+
+        // Seed: frase de exemplo (desativada) por loja sem nenhum gatilho
+        await sql`
+          INSERT INTO gatilhos_compra (loja_id, frase, ativo)
+          SELECT id, 'Obrigado pela compra', false
+          FROM lojas l
+          WHERE NOT EXISTS (SELECT 1 FROM gatilhos_compra g WHERE g.loja_id = l.id)
+        `.catch(() => {});
+
         return sql;
       },
     },
