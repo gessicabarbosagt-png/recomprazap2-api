@@ -330,7 +330,19 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           }
         }
 
+        // Mensagens enviadas pelo celular chegam como type='append' (não 'notify').
+        // Processar antes do early return para que inbox e gatilhos funcionem.
         if (type !== 'notify') {
+          for (const m of (messages ?? [])) {
+            const jid: string = m.key?.remoteJid ?? '';
+            // Só mensagens fromMe para chats individuais (@s.whatsapp.net) — ignora grupos
+            if (m.key?.fromMe && m.message && jid.endsWith('@s.whatsapp.net')) {
+              this.diag(`[Baileys] eco celular (${type}) jid=${jid} — processando`);
+              await this.processarMensagemEnviadaCelular(m).catch((err: any) =>
+                this.diag(`[Baileys] erro ao processar eco celular: ${err?.message}`),
+              );
+            }
+          }
           this.msgsIgnoradas++;
           return;
         }
@@ -807,20 +819,36 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const gatilhos = await this.sql`
       SELECT frase FROM gatilhos_compra WHERE loja_id = ${lojaId} AND ativo = true
     `;
-    if (!gatilhos.length) return;
+    this.diag(`[GATILHO] testando ${gatilhos.length} gatilho(s) para ${telefone} | msg="${texto.slice(0, 60)}"`);
+    if (!gatilhos.length) {
+      this.diag(`[GATILHO] nenhum gatilho ativo para loja=${lojaId} — abortando`);
+      return;
+    }
+
+    for (const g of gatilhos) {
+      const fraseNorm = this.normalizarTexto(g.frase);
+      this.diag(`[GATILHO] frase="${g.frase}" norm="${fraseNorm}" | textoNorm="${textoNorm.slice(0, 60)}" | match=${textoNorm.includes(fraseNorm)}`);
+    }
 
     const match = gatilhos.find((g: any) => textoNorm.includes(this.normalizarTexto(g.frase)));
-    if (!match) return;
+    if (!match) {
+      this.diag(`[GATILHO] nenhum match para msg de ${telefone}`);
+      return;
+    }
 
-    this.diag(`[Baileys] GATILHO COMPRA "${match.frase}" ativado por msg de ${telefone}`);
+    this.diag(`[GATILHO] MATCH frase="${match.frase}" para ${telefone}`);
 
     const [cliente] = await this.sql`
       SELECT id FROM clientes WHERE telefone = ${telefone} AND deleted_at IS NULL LIMIT 1
     `;
-    if (!cliente) return;
+    if (!cliente) {
+      this.diag(`[GATILHO] cliente não encontrado para ${telefone} — abortando`);
+      return;
+    }
+    this.diag(`[GATILHO] cliente encontrado id=${cliente.id}`);
 
     const [pedidoAberto] = await this.sql`
-      SELECT id FROM pedidos
+      SELECT id, status_jornada FROM pedidos
       WHERE cliente_id = ${cliente.id}
         AND loja_id = ${lojaId}
         AND deleted_at IS NULL
@@ -838,14 +866,14 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           updated_at     = NOW()
         WHERE id = ${pedidoAberto.id}
       `;
-      this.diag(`[Baileys] pedido ${pedidoAberto.id} → comprou (palavra_chave)`);
+      this.diag(`[GATILHO] pedido ${pedidoAberto.id} (era "${pedidoAberto.statusJornada}") → comprou via palavra_chave`);
     } else {
       // Venda que não veio de lembrete — cria pedido direto
       await this.sql`
         INSERT INTO pedidos (loja_id, cliente_id, status_jornada, confirmado_por, confirmado_em)
         VALUES (${lojaId}, ${cliente.id}, 'comprou', 'palavra_chave', NOW())
       `;
-      this.diag(`[Baileys] pedido direto criado para ${telefone} via gatilho`);
+      this.diag(`[GATILHO] nenhum pedido aberto para cliente=${cliente.id} — pedido direto criado via palavra_chave`);
     }
   }
 
