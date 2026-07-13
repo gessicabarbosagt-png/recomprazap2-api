@@ -568,8 +568,11 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       LIMIT 1
     `;
 
+    this.diag(`[FLUXO] cliente=${clienteId} loja=${lojaId} sessao=${sessao?.id ?? 'NENHUMA'} lembreteId=${sessao?.lembreteId ?? 'null'} fluxo=${fluxo ? 'SIM' : 'NENHUM'} texto="${texto.slice(0, 40)}"`);
+
     // Sem sessão ou sem fluxo ativo → comportamento legado
     if (!sessao || !fluxo) {
+      this.diag(`[FLUXO] ${!sessao ? 'sem sessão ativa' : 'sem fluxo ativo'} → fallback legado para ${telefone}`);
       if (/^[123]$/.test(texto.trim())) {
         await this.processarRespostaPorTelefone(texto.trim(), telefone);
       }
@@ -577,7 +580,13 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     }
 
     const gatilho = normalizarResposta(texto);
-    const opcoes = (fluxo.opcoes ?? []) as OpcaoFluxo[];
+
+    // Parse defensivo: opcoes pode vir como string se coluna era TEXT antes da migration
+    const opcoesRaw = fluxo.opcoes ?? [];
+    const opcoes = (typeof opcoesRaw === 'string' ? JSON.parse(opcoesRaw) : opcoesRaw) as OpcaoFluxo[];
+
+    this.diag(`[FLUXO] gatilho="${gatilho}" opcoes=${opcoes.length} gatilhos=[${opcoes.map((o) => o.gatilho).join(',')}]`);
+
     const opcaoMatch = gatilho ? opcoes.find((o) => o.gatilho === gatilho) : null;
 
     if (!opcaoMatch) {
@@ -585,26 +594,34 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       await this.sql`
         UPDATE sessao_conversa SET fallbacks = ${novosFallbacks}, updated_at = NOW() WHERE id = ${sessao.id}
       `;
+      this.diag(`[FLUXO] sem match para gatilho="${gatilho}" — fallback ${novosFallbacks}/2 para ${telefone}`);
       if (novosFallbacks <= 2) {
         await this.enviarMensagem(telefone, fluxo.mensagemFallback ?? fluxo.mensagem_fallback, lojaId);
-        this.diag(`[Baileys] fallback ${novosFallbacks}/2 para ${telefone}`);
+        this.diag(`[FLUXO] mensagem fallback enviada para ${telefone}`);
       } else {
-        this.diag(`[Baileys] ${novosFallbacks} fallbacks para ${telefone} — parando respostas automáticas`);
+        this.diag(`[FLUXO] ${novosFallbacks} fallbacks para ${telefone} — parando respostas automáticas`);
       }
       return;
     }
 
+    this.diag(`[FLUXO] MATCH gatilho="${gatilho}" acao="${opcaoMatch.acao}" para ${telefone}`);
+
     // Match encontrado!
     await this.enviarMensagem(telefone, opcaoMatch.mensagem_resposta, lojaId);
+    this.diag(`[FLUXO] mensagem resposta enviada para ${telefone}: "${opcaoMatch.mensagem_resposta.slice(0, 60)}"`);
 
     if (opcaoMatch.acao !== 'nenhuma' && sessao.lembreteId) {
+      this.diag(`[FLUXO] executando acao="${opcaoMatch.acao}" lembreteId=${sessao.lembreteId}`);
       await this.executarAcaoFluxo(opcaoMatch.acao, sessao.lembreteId, opcaoMatch.acao_params).catch((e: any) =>
-        this.diag(`[Baileys] executarAcaoFluxo falhou: ${e?.message}`),
+        this.diag(`[FLUXO] executarAcaoFluxo FALHOU: ${e?.message}`),
       );
+      this.diag(`[FLUXO] acao="${opcaoMatch.acao}" concluída para lembreteId=${sessao.lembreteId}`);
+    } else if (opcaoMatch.acao !== 'nenhuma' && !sessao.lembreteId) {
+      this.diag(`[FLUXO] acao="${opcaoMatch.acao}" PULADA — sessão sem lembrete_id (modo teste?)`);
     }
 
     await this.sql`UPDATE sessao_conversa SET expira_em = NOW(), updated_at = NOW() WHERE id = ${sessao.id}`;
-    this.diag(`[Baileys] sessão ${sessao.id} encerrada após resposta "${gatilho}"`);
+    this.diag(`[FLUXO] sessão ${sessao.id} encerrada após resposta "${gatilho}"`);
   }
 
   private async executarAcaoFluxo(acao: string, lembreteId: string, acoParams?: any): Promise<void> {
@@ -658,7 +675,10 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const [cliente] = await this.sql`
       SELECT id, nome FROM clientes WHERE telefone = ${telefone} AND deleted_at IS NULL LIMIT 1
     `;
-    if (!cliente) return;
+    if (!cliente) {
+      this.diag(`[LEGADO] processarRespostaPorTelefone: cliente não encontrado para ${telefone}`);
+      return;
+    }
 
     const [lembrete] = await this.sql`
       SELECT l.id FROM lembretes l
@@ -666,8 +686,12 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       WHERE cr.cliente_id = ${cliente.id} AND l.status = 'enviado'
       ORDER BY l.enviado_em DESC LIMIT 1
     `;
-    if (!lembrete) return;
+    if (!lembrete) {
+      this.diag(`[LEGADO] processarRespostaPorTelefone: nenhum lembrete 'enviado' para clienteId=${cliente.id} — ação ignorada`);
+      return;
+    }
 
+    this.diag(`[LEGADO] processarRespostaPorTelefone: opcao="${opcao}" acao="${acao}" lembreteId=${lembrete.id} cliente=${cliente.id}`);
     await this.processarResposta(acao, lembrete.id, telefone);
   }
 
@@ -909,7 +933,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         INSERT INTO sessao_conversa (loja_id, cliente_id, lembrete_id, expira_em)
         VALUES (${lojaId}, ${cliente.id}, ${lembreteId}, NOW() + INTERVAL '48 hours')
       `;
-      this.diag(`[Baileys] sessão criada para cliente ${cliente.id} (lembrete ${lembreteId})`);
+      this.diag(`[SESSAO] criada: clienteId=${cliente.id} lembreteId=${lembreteId} loja=${lojaId} expira_em=+48h`);
+    } else {
+      this.diag(`[SESSAO] AVISO: cliente não encontrado para ${telefone} loja=${lojaId} — sessão NÃO criada`);
     }
   }
 

@@ -98,12 +98,22 @@ export class FluxoConversaService {
     `;
 
     if (cliente) {
+      // Busca o lembrete mais recente do cliente para vincular à sessão de teste
+      // (sem isso, ações como registrar_pedido seriam puladas por falta de lembrete_id)
+      const [ultimoLembrete] = await this.sql`
+        SELECT l.id FROM lembretes l
+        JOIN ciclos_recompra cr ON cr.id = l.ciclo_id
+        WHERE cr.cliente_id = ${cliente.id}
+        ORDER BY l.created_at DESC
+        LIMIT 1
+      `;
+
       await this.sql`DELETE FROM sessao_conversa WHERE loja_id = ${lojaId} AND cliente_id = ${cliente.id} AND expira_em > NOW()`;
       await this.sql`
-        INSERT INTO sessao_conversa (loja_id, cliente_id, expira_em)
-        VALUES (${lojaId}, ${cliente.id}, NOW() + INTERVAL '48 hours')
+        INSERT INTO sessao_conversa (loja_id, cliente_id, lembrete_id, expira_em)
+        VALUES (${lojaId}, ${cliente.id}, ${ultimoLembrete?.id ?? null}, NOW() + INTERVAL '48 hours')
       `;
-      return { ok: true, sessaoCriada: true };
+      return { ok: true, sessaoCriada: true, lembreteVinculado: ultimoLembrete?.id ?? null };
     }
 
     return { ok: true, sessaoCriada: false, aviso: 'Mensagem enviada, mas não foi possível criar sessão de teste — este telefone não está cadastrado como cliente desta loja.' };
