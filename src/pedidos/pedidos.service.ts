@@ -124,11 +124,27 @@ export class PedidosService {
   }
 
   async atualizarJornada(id: string, lojaId: string, dto: AtualizarJornadaDto) {
+    // Normaliza valor: aceita número JS ou string '89,90'/'89.90'
+    let valorNormalizado: number | null = null;
+    if (dto.valor !== undefined && dto.valor !== null) {
+      const valorStr = String(dto.valor).replace(',', '.');
+      const parsed = parseFloat(valorStr);
+      if (isNaN(parsed)) {
+        throw new BadRequestException('Valor inválido — informe um número, ex: 89.90');
+      }
+      if (parsed < 0) {
+        throw new BadRequestException('Valor não pode ser negativo');
+      }
+      valorNormalizado = parsed;
+    }
+
     const finalizado = ['comprou', 'nao_comprou'].includes(dto.statusJornada);
+    // COALESCE com cast explícito ::numeric resolve "could not determine data type of parameter $N"
+    // quando valor é null — o PostgreSQL não consegue inferir o tipo via CASE WHEN ... IS NOT NULL
     const [atualizado] = await this.sql`
       UPDATE pedidos SET
         status_jornada = ${dto.statusJornada},
-        valor = CASE WHEN ${dto.valor ?? null} IS NOT NULL THEN ${dto.valor ?? null} ELSE valor END,
+        valor          = COALESCE(${valorNormalizado}::numeric, valor),
         confirmado_em  = CASE WHEN ${finalizado} THEN NOW() ELSE confirmado_em END,
         confirmado_por = CASE WHEN ${finalizado} THEN 'manual' ELSE confirmado_por END,
         updated_at     = NOW()

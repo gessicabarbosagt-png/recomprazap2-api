@@ -596,7 +596,10 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       `;
       this.diag(`[FLUXO] sem match para gatilho="${gatilho}" — fallback ${novosFallbacks}/2 para ${telefone}`);
       if (novosFallbacks <= 2) {
-        await this.enviarMensagem(telefone, fluxo.mensagemFallback ?? fluxo.mensagem_fallback, lojaId);
+        const fallbackMsg = fluxo.mensagemFallback ?? fluxo.mensagem_fallback;
+        const fallbackMsgId = await this.enviarMensagem(telefone, fallbackMsg, lojaId);
+        // Salva no banco imediatamente — eco de envio chega como type='append' e não é processado
+        await this.registrarMensagem({ telefone, direcao: 'enviada', conteudo: fallbackMsg, whatsappMsgId: fallbackMsgId || null, origem: 'sistema' });
         this.diag(`[FLUXO] mensagem fallback enviada para ${telefone}`);
       } else {
         this.diag(`[FLUXO] ${novosFallbacks} fallbacks para ${telefone} — parando respostas automáticas`);
@@ -606,8 +609,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     this.diag(`[FLUXO] MATCH gatilho="${gatilho}" acao="${opcaoMatch.acao}" para ${telefone}`);
 
-    // Match encontrado!
-    await this.enviarMensagem(telefone, opcaoMatch.mensagem_resposta, lojaId);
+    // Match encontrado! Salva no banco imediatamente — eco de envio chega como type='append' e não é processado
+    const respostaMsgId = await this.enviarMensagem(telefone, opcaoMatch.mensagem_resposta, lojaId);
+    await this.registrarMensagem({ telefone, direcao: 'enviada', conteudo: opcaoMatch.mensagem_resposta, whatsappMsgId: respostaMsgId || null, origem: 'sistema' });
     this.diag(`[FLUXO] mensagem resposta enviada para ${telefone}: "${opcaoMatch.mensagem_resposta.slice(0, 60)}"`);
 
     if (opcaoMatch.acao !== 'nenhuma' && sessao.lembreteId) {
