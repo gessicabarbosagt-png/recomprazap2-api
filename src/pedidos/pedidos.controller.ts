@@ -17,19 +17,21 @@ export class PedidosController {
     return this.pedidosService.criar(usuario.lojaId, dto);
   }
 
-  // GET /api/v1/pedidos?status=pendente&statusJornada=comprou&dias=30
+  // GET /api/v1/pedidos?status=pendente&statusJornada=comprou&dias=30&desde=2025-01-01
   @Get()
   listar(
     @UsuarioAtual() usuario: any,
     @Query('status') status?: string,
     @Query('statusJornada') statusJornada?: string,
     @Query('dias') dias?: string,
+    @Query('desde') desde?: string,
   ) {
     return this.pedidosService.listar(
       usuario.lojaId,
       status,
       statusJornada,
       dias ? parseInt(dias, 10) : undefined,
+      desde,
     );
   }
 

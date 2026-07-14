@@ -34,7 +34,23 @@ export class PedidosService {
     private readonly ciclosService: CiclosService,
   ) {}
 
-  async listar(lojaId: string, status?: string, statusJornada?: string, diasAtras?: number) {
+  async listar(lojaId: string, status?: string, statusJornada?: string, diasAtras?: number, desde?: string) {
+    // Pedidos confirmados filtram por confirmado_em; demais por created_at
+    const usarConfirmadoEm = statusJornada === 'comprou';
+
+    let filtroPeriodo: any;
+    if (diasAtras) {
+      filtroPeriodo = usarConfirmadoEm
+        ? this.sql`AND p.confirmado_em >= NOW() - (${diasAtras} || ' days')::INTERVAL`
+        : this.sql`AND p.created_at   >= NOW() - (${diasAtras} || ' days')::INTERVAL`;
+    } else if (desde) {
+      filtroPeriodo = usarConfirmadoEm
+        ? this.sql`AND p.confirmado_em >= ${desde}::date`
+        : this.sql`AND p.created_at   >= ${desde}::date`;
+    } else {
+      filtroPeriodo = this.sql``;
+    }
+
     return this.sql`
       SELECT
         p.id,
@@ -50,19 +66,19 @@ export class PedidosService {
         p.link_pagamento,
         p.fora_horario,
         p.created_at,
-        c.id   AS cliente_id,
-        c.nome  AS cliente_nome,
-        c.telefone AS cliente_telefone,
-        pr.nome AS produto_nome,
-        pr.unidade AS produto_unidade
+        c.id          AS cliente_id,
+        c.nome        AS cliente_nome,
+        c.telefone    AS cliente_telefone,
+        pr.nome       AS produto_nome,
+        pr.unidade    AS produto_unidade
       FROM pedidos p
-      JOIN clientes c  ON c.id  = p.cliente_id
+      JOIN clientes c   ON c.id  = p.cliente_id
       LEFT JOIN produtos pr ON pr.id = p.produto_id
       WHERE p.loja_id = ${lojaId}
         AND p.deleted_at IS NULL
-        ${status ? this.sql`AND p.status = ${status}` : this.sql``}
+        ${status        ? this.sql`AND p.status         = ${status}`        : this.sql``}
         ${statusJornada ? this.sql`AND p.status_jornada = ${statusJornada}` : this.sql``}
-        ${diasAtras ? this.sql`AND p.created_at >= NOW() - (${diasAtras} || ' days')::INTERVAL` : this.sql``}
+        ${filtroPeriodo}
       ORDER BY p.created_at DESC
       LIMIT 200
     `;
@@ -287,17 +303,28 @@ export class PedidosService {
   }
 
   async resumoJornada(lojaId: string, diasAtras: number) {
+    // total_pedidos: pedidos criados no período (created_at)
+    // total_compras / receita: vendas confirmadas no período (confirmado_em)
+    // Isso garante consistência com a lista /pedidos?etapa=comprou&dias=N
     const [resumo] = await this.sql`
       SELECT
-        COUNT(*)                                                 AS total_pedidos,
-        COUNT(*) FILTER (WHERE status_jornada = 'comprou')       AS total_compras,
+        COUNT(*) FILTER (WHERE created_at    >= NOW() - (${diasAtras} || ' days')::INTERVAL)
+          AS total_pedidos,
         COUNT(*) FILTER (WHERE status_jornada = 'comprou'
-                              AND valor IS NULL)                  AS compras_sem_valor,
-        COALESCE(SUM(valor) FILTER (WHERE status_jornada = 'comprou'), 0) AS receita_confirmada
+                           AND confirmado_em >= NOW() - (${diasAtras} || ' days')::INTERVAL)
+          AS total_compras,
+        COUNT(*) FILTER (WHERE status_jornada = 'comprou'
+                           AND confirmado_em >= NOW() - (${diasAtras} || ' days')::INTERVAL
+                           AND valor IS NULL)
+          AS compras_sem_valor,
+        COALESCE(
+          SUM(valor) FILTER (WHERE status_jornada = 'comprou'
+                               AND confirmado_em >= NOW() - (${diasAtras} || ' days')::INTERVAL),
+          0
+        ) AS receita_confirmada
       FROM pedidos
       WHERE loja_id = ${lojaId}
         AND deleted_at IS NULL
-        AND created_at >= NOW() - (${diasAtras} || ' days')::INTERVAL
     `;
     return resumo;
   }
