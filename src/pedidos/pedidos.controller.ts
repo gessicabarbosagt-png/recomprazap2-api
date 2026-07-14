@@ -17,10 +17,20 @@ export class PedidosController {
     return this.pedidosService.criar(usuario.lojaId, dto);
   }
 
-  // GET /api/v1/pedidos?status=pendente
+  // GET /api/v1/pedidos?status=pendente&statusJornada=comprou&dias=30
   @Get()
-  listar(@UsuarioAtual() usuario: any, @Query('status') status?: string) {
-    return this.pedidosService.listar(usuario.lojaId, status);
+  listar(
+    @UsuarioAtual() usuario: any,
+    @Query('status') status?: string,
+    @Query('statusJornada') statusJornada?: string,
+    @Query('dias') dias?: string,
+  ) {
+    return this.pedidosService.listar(
+      usuario.lojaId,
+      status,
+      statusJornada,
+      dias ? parseInt(dias, 10) : undefined,
+    );
   }
 
   // GET /api/v1/pedidos/resumo?dias=30

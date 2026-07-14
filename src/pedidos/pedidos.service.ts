@@ -34,7 +34,7 @@ export class PedidosService {
     private readonly ciclosService: CiclosService,
   ) {}
 
-  async listar(lojaId: string, status?: string) {
+  async listar(lojaId: string, status?: string, statusJornada?: string, diasAtras?: number) {
     return this.sql`
       SELECT
         p.id,
@@ -50,6 +50,7 @@ export class PedidosService {
         p.link_pagamento,
         p.fora_horario,
         p.created_at,
+        c.id   AS cliente_id,
         c.nome  AS cliente_nome,
         c.telefone AS cliente_telefone,
         pr.nome AS produto_nome,
@@ -60,8 +61,10 @@ export class PedidosService {
       WHERE p.loja_id = ${lojaId}
         AND p.deleted_at IS NULL
         ${status ? this.sql`AND p.status = ${status}` : this.sql``}
+        ${statusJornada ? this.sql`AND p.status_jornada = ${statusJornada}` : this.sql``}
+        ${diasAtras ? this.sql`AND p.created_at >= NOW() - (${diasAtras} || ' days')::INTERVAL` : this.sql``}
       ORDER BY p.created_at DESC
-      LIMIT 100
+      LIMIT 200
     `;
   }
 
