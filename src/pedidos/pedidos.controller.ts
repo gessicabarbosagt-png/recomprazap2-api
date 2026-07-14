@@ -1,8 +1,8 @@
 import {
-  Controller, UseGuards, Get, Patch,
+  Controller, UseGuards, Get, Post, Patch,
   Param, Body, Query, ParseUUIDPipe,
 } from '@nestjs/common';
-import { PedidosService, AtualizarPedidoDto, AtualizarJornadaDto } from './pedidos.service';
+import { PedidosService, AtualizarPedidoDto, AtualizarJornadaDto, CriarPedidoDto } from './pedidos.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { UsuarioAtual } from '../common/decorators/usuario-atual.decorator';
 
@@ -10,6 +10,12 @@ import { UsuarioAtual } from '../common/decorators/usuario-atual.decorator';
 @Controller('pedidos')
 export class PedidosController {
   constructor(private readonly pedidosService: PedidosService) {}
+
+  // POST /api/v1/pedidos
+  @Post()
+  criar(@Body() dto: CriarPedidoDto, @UsuarioAtual() usuario: any) {
+    return this.pedidosService.criar(usuario.lojaId, dto);
+  }
 
   // GET /api/v1/pedidos?status=pendente
   @Get()

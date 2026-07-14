@@ -168,6 +168,49 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
           WHERE NOT EXISTS (SELECT 1 FROM gatilhos_compra g WHERE g.loja_id = l.id)
         `.catch(() => {});
 
+        // ---- Etapas da jornada de compra ----
+        await sql`
+          CREATE TABLE IF NOT EXISTS etapas_jornada (
+            id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            loja_id    UUID NOT NULL,
+            nome       TEXT NOT NULL,
+            ordem      INT NOT NULL DEFAULT 0,
+            tipo       TEXT NOT NULL CHECK (tipo IN ('intermediaria','final_comprou','final_nao_comprou')),
+            ativo      BOOLEAN NOT NULL DEFAULT true,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `.catch(() => {});
+        await sql`CREATE INDEX IF NOT EXISTS idx_etapas_jornada_loja ON etapas_jornada (loja_id, ordem)`.catch(() => {});
+        await sql`
+          INSERT INTO etapas_jornada (loja_id, nome, ordem, tipo)
+          SELECT l.id, v.nome, v.ordem, v.tipo
+          FROM lojas l
+          CROSS JOIN (VALUES
+            ('Aguardando retorno', 1, 'intermediaria'),
+            ('Orçamento enviado',  2, 'intermediaria'),
+            ('Comprou',            3, 'final_comprou'),
+            ('Não comprou',        4, 'final_nao_comprou')
+          ) AS v(nome, ordem, tipo)
+          WHERE NOT EXISTS (SELECT 1 FROM etapas_jornada ej WHERE ej.loja_id = l.id)
+        `.catch(() => {});
+        await sql`ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS etapa_id UUID REFERENCES etapas_jornada(id)`.catch(() => {});
+        await sql`
+          UPDATE pedidos p
+          SET etapa_id = (
+            SELECT ej.id FROM etapas_jornada ej
+            WHERE ej.loja_id = p.loja_id
+              AND (
+                (p.status_jornada = 'aguardando'        AND ej.tipo = 'intermediaria' AND ej.ordem = 1) OR
+                (p.status_jornada = 'orcamento_enviado' AND ej.tipo = 'intermediaria' AND ej.ordem = 2) OR
+                (p.status_jornada = 'comprou'           AND ej.tipo = 'final_comprou') OR
+                (p.status_jornada = 'nao_comprou'       AND ej.tipo = 'final_nao_comprou')
+              )
+            LIMIT 1
+          )
+          WHERE p.etapa_id IS NULL AND p.deleted_at IS NULL
+        `.catch(() => {});
+
         return sql;
       },
     },

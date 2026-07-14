@@ -17,7 +17,13 @@ export interface AtualizarPedidoDto {
 }
 
 export interface AtualizarJornadaDto {
-  statusJornada: StatusJornada;
+  etapaId: string;       // UUID da etapa
+  valor?: number | null;
+}
+
+export interface CriarPedidoDto {
+  clienteId: string;
+  etapaId: string;
   valor?: number | null;
 }
 
@@ -72,21 +78,56 @@ export class PedidosService {
     return pedido;
   }
 
-  // Retorna o pedido com jornada aberta (aguardando ou orcamento_enviado) mais recente do cliente
+  // Retorna { pedidoAberto, ultimoPedidoFechado, historico } para o cliente
   async buscarAbertoPorCliente(clienteId: string, lojaId: string) {
-    const [pedido] = await this.sql`
-      SELECT p.id, p.status_jornada, p.valor, p.confirmado_em, p.confirmado_por,
-             pr.nome AS produto_nome, p.created_at
+    const [pedidoAberto] = await this.sql`
+      SELECT p.id, p.status_jornada, p.etapa_id, p.valor, p.confirmado_em, p.confirmado_por,
+             pr.nome AS produto_nome, p.created_at,
+             ej.nome AS etapa_nome, ej.tipo AS etapa_tipo
       FROM pedidos p
       LEFT JOIN produtos pr ON pr.id = p.produto_id
+      LEFT JOIN etapas_jornada ej ON ej.id = p.etapa_id
       WHERE p.cliente_id = ${clienteId}
         AND p.loja_id = ${lojaId}
         AND p.deleted_at IS NULL
-        AND p.status_jornada IN ('aguardando', 'orcamento_enviado')
+        AND ej.tipo = 'intermediaria'
       ORDER BY p.created_at DESC
       LIMIT 1
     `;
-    return pedido ?? null;
+
+    const [ultimoPedidoFechado] = await this.sql`
+      SELECT p.id, p.status_jornada, p.etapa_id, p.valor, p.confirmado_em, p.confirmado_por,
+             pr.nome AS produto_nome, p.created_at,
+             ej.nome AS etapa_nome, ej.tipo AS etapa_tipo
+      FROM pedidos p
+      LEFT JOIN produtos pr ON pr.id = p.produto_id
+      LEFT JOIN etapas_jornada ej ON ej.id = p.etapa_id
+      WHERE p.cliente_id = ${clienteId}
+        AND p.loja_id = ${lojaId}
+        AND p.deleted_at IS NULL
+        AND ej.tipo IN ('final_comprou', 'final_nao_comprou')
+      ORDER BY p.created_at DESC
+      LIMIT 1
+    `;
+
+    const historico = await this.sql`
+      SELECT p.id, p.status_jornada, p.etapa_id, p.valor, p.confirmado_em, p.created_at,
+             ej.nome AS etapa_nome, ej.tipo AS etapa_tipo
+      FROM pedidos p
+      LEFT JOIN etapas_jornada ej ON ej.id = p.etapa_id
+      WHERE p.cliente_id = ${clienteId}
+        AND p.loja_id = ${lojaId}
+        AND p.deleted_at IS NULL
+        AND ej.tipo IN ('final_comprou', 'final_nao_comprou')
+      ORDER BY p.created_at DESC
+      LIMIT 5
+    `;
+
+    return {
+      pedidoAberto: pedidoAberto ?? null,
+      ultimoPedidoFechado: ultimoPedidoFechado ?? null,
+      historico,
+    };
   }
 
   async atualizar(id: string, dto: AtualizarPedidoDto, lojaId: string) {
@@ -124,6 +165,12 @@ export class PedidosService {
   }
 
   async atualizarJornada(id: string, lojaId: string, dto: AtualizarJornadaDto) {
+    // Valida e busca a etapa
+    const [etapa] = await this.sql`
+      SELECT id, tipo FROM etapas_jornada WHERE id = ${dto.etapaId} AND loja_id = ${lojaId}
+    `;
+    if (!etapa) throw new NotFoundException('Etapa não encontrada ou não pertence a esta loja');
+
     // Normaliza valor: aceita número JS ou string '89,90'/'89.90'
     let valorNormalizado: number | null = null;
     if (dto.valor !== undefined && dto.valor !== null) {
@@ -138,21 +185,85 @@ export class PedidosService {
       valorNormalizado = parsed;
     }
 
-    const finalizado = ['comprou', 'nao_comprou'].includes(dto.statusJornada);
+    const finalizado = etapa.tipo === 'final_comprou' || etapa.tipo === 'final_nao_comprou';
+
+    // Deriva status_jornada legado a partir do tipo da etapa
+    let statusJornadaLegado: StatusJornada;
+    if (etapa.tipo === 'final_comprou') {
+      statusJornadaLegado = 'comprou';
+    } else if (etapa.tipo === 'final_nao_comprou') {
+      statusJornadaLegado = 'nao_comprou';
+    } else {
+      statusJornadaLegado = 'aguardando';
+    }
+
     // COALESCE com cast explícito ::numeric resolve "could not determine data type of parameter $N"
     // quando valor é null — o PostgreSQL não consegue inferir o tipo via CASE WHEN ... IS NOT NULL
     const [atualizado] = await this.sql`
       UPDATE pedidos SET
-        status_jornada = ${dto.statusJornada},
+        etapa_id       = ${dto.etapaId},
+        status_jornada = ${statusJornadaLegado},
         valor          = COALESCE(${valorNormalizado}::numeric, valor),
         confirmado_em  = CASE WHEN ${finalizado} THEN NOW() ELSE confirmado_em END,
         confirmado_por = CASE WHEN ${finalizado} THEN 'manual' ELSE confirmado_por END,
         updated_at     = NOW()
       WHERE id = ${id} AND loja_id = ${lojaId} AND deleted_at IS NULL
-      RETURNING id, status_jornada, valor, confirmado_em, confirmado_por
+      RETURNING id, etapa_id, status_jornada, valor, confirmado_em, confirmado_por
     `;
     if (!atualizado) throw new NotFoundException('Pedido não encontrado');
     return atualizado;
+  }
+
+  async criar(lojaId: string, dto: CriarPedidoDto) {
+    // Valida e busca a etapa
+    const [etapa] = await this.sql`
+      SELECT id, tipo FROM etapas_jornada WHERE id = ${dto.etapaId} AND loja_id = ${lojaId}
+    `;
+    if (!etapa) throw new NotFoundException('Etapa não encontrada ou não pertence a esta loja');
+
+    // Normaliza valor
+    let valorNormalizado: number | null = null;
+    if (dto.valor !== undefined && dto.valor !== null) {
+      const valorStr = String(dto.valor).replace(',', '.');
+      const parsed = parseFloat(valorStr);
+      if (isNaN(parsed)) {
+        throw new BadRequestException('Valor inválido — informe um número, ex: 89.90');
+      }
+      if (parsed < 0) {
+        throw new BadRequestException('Valor não pode ser negativo');
+      }
+      valorNormalizado = parsed;
+    }
+
+    const finalizado = etapa.tipo === 'final_comprou' || etapa.tipo === 'final_nao_comprou';
+
+    let statusJornadaLegado: StatusJornada;
+    if (etapa.tipo === 'final_comprou') {
+      statusJornadaLegado = 'comprou';
+    } else if (etapa.tipo === 'final_nao_comprou') {
+      statusJornadaLegado = 'nao_comprou';
+    } else {
+      statusJornadaLegado = 'aguardando';
+    }
+
+    const confirmedAt = finalizado ? new Date() : null;
+    const confirmedBy = finalizado ? 'manual' : null;
+
+    const [pedido] = await this.sql`
+      INSERT INTO pedidos (loja_id, cliente_id, etapa_id, status_jornada, valor, confirmado_em, confirmado_por, status)
+      VALUES (
+        ${lojaId},
+        ${dto.clienteId},
+        ${dto.etapaId},
+        ${statusJornadaLegado},
+        ${valorNormalizado},
+        ${confirmedAt},
+        ${confirmedBy},
+        'pendente'
+      )
+      RETURNING id, etapa_id, status_jornada, valor, confirmado_em, confirmado_por, created_at
+    `;
+    return pedido;
   }
 
   async resumoPorPeriodo(lojaId: string, diasAtras: number) {

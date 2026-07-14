@@ -651,13 +651,20 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     if (!lembrete) return;
 
     switch (acao) {
-      case 'registrar_pedido':
+      case 'registrar_pedido': {
+        const [etapaInicial] = await this.sql`
+          SELECT id FROM etapas_jornada
+          WHERE loja_id = ${lembrete.lojaId} AND tipo = 'intermediaria' AND ativo = true
+          ORDER BY ordem
+          LIMIT 1
+        `;
         await this.sql`
-          INSERT INTO pedidos (loja_id, lembrete_id, cliente_id, produto_id, quantidade, status)
-          VALUES (${lembrete.lojaId}, ${lembrete.id}, ${lembrete.clienteId}, ${lembrete.produtoId}, ${lembrete.quantidade ?? 1}, 'pendente')
+          INSERT INTO pedidos (loja_id, lembrete_id, cliente_id, produto_id, quantidade, etapa_id, status)
+          VALUES (${lembrete.lojaId}, ${lembrete.id}, ${lembrete.clienteId}, ${lembrete.produtoId}, ${lembrete.quantidade ?? 1}, ${etapaInicial?.id ?? null}, 'pendente')
         `;
         await this.sql`UPDATE lembretes SET status='respondido', updated_at=NOW() WHERE id=${lembrete.id}`;
         break;
+      }
 
       case 'adiar_lembrete': {
         const dias = parseInt(String(acoParams?.dias ?? 7), 10);
@@ -722,13 +729,20 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     if (!lembrete) return;
 
     switch (acao) {
-      case 'pedir':
+      case 'pedir': {
+        const [etapaInicialLegado] = await this.sql`
+          SELECT id FROM etapas_jornada
+          WHERE loja_id = ${lembrete.lojaId} AND tipo = 'intermediaria' AND ativo = true
+          ORDER BY ordem
+          LIMIT 1
+        `;
         await this.sql`
-          INSERT INTO pedidos (loja_id, lembrete_id, cliente_id, produto_id, quantidade, status)
-          VALUES (${lembrete.lojaId}, ${lembrete.id}, ${lembrete.clienteId}, ${lembrete.produtoId}, ${lembrete.quantidade ?? 1}, 'pendente')
+          INSERT INTO pedidos (loja_id, lembrete_id, cliente_id, produto_id, quantidade, etapa_id, status)
+          VALUES (${lembrete.lojaId}, ${lembrete.id}, ${lembrete.clienteId}, ${lembrete.produtoId}, ${lembrete.quantidade ?? 1}, ${etapaInicialLegado?.id ?? null}, 'pendente')
         `;
         await this.sql`UPDATE lembretes SET status='respondido', updated_at=NOW() WHERE id=${lembrete.id}`;
         break;
+      }
 
       case 'depois':
         await this.sql`
@@ -848,30 +862,36 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     this.diag(`[GATILHO] cliente encontrado id=${cliente.id}`);
 
     const [pedidoAberto] = await this.sql`
-      SELECT id, status_jornada FROM pedidos
-      WHERE cliente_id = ${cliente.id}
-        AND loja_id = ${lojaId}
-        AND deleted_at IS NULL
-        AND status_jornada IN ('aguardando', 'orcamento_enviado')
-      ORDER BY created_at DESC
+      SELECT p.id FROM pedidos p
+      JOIN etapas_jornada ej ON ej.id = p.etapa_id
+      WHERE p.cliente_id = ${cliente.id}
+        AND p.loja_id = ${lojaId}
+        AND p.deleted_at IS NULL
+        AND ej.tipo = 'intermediaria'
+      ORDER BY p.created_at DESC
       LIMIT 1
+    `;
+
+    const [etapaComprou] = await this.sql`
+      SELECT id FROM etapas_jornada WHERE loja_id = ${lojaId} AND tipo = 'final_comprou' LIMIT 1
     `;
 
     if (pedidoAberto) {
       await this.sql`
         UPDATE pedidos SET
+          etapa_id       = ${etapaComprou?.id ?? null},
           status_jornada = 'comprou',
           confirmado_por = 'palavra_chave',
           confirmado_em  = NOW(),
           updated_at     = NOW()
         WHERE id = ${pedidoAberto.id}
       `;
-      this.diag(`[GATILHO] pedido ${pedidoAberto.id} (era "${pedidoAberto.statusJornada}") → comprou via palavra_chave`);
+      this.diag(`[GATILHO] pedido ${pedidoAberto.id} → comprou via palavra_chave`);
     } else {
       // Venda que não veio de lembrete — cria pedido direto
       await this.sql`
-        INSERT INTO pedidos (loja_id, cliente_id, status_jornada, confirmado_por, confirmado_em)
-        VALUES (${lojaId}, ${cliente.id}, 'comprou', 'palavra_chave', NOW())
+        INSERT INTO pedidos (loja_id, cliente_id, etapa_id, status_jornada, confirmado_por, confirmado_em)
+        VALUES (${lojaId}, ${cliente.id}, ${etapaComprou?.id ?? null}, 'comprou', 'palavra_chave', NOW())
       `;
       this.diag(`[GATILHO] nenhum pedido aberto para cliente=${cliente.id} — pedido direto criado via palavra_chave`);
     }

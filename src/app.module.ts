@@ -13,6 +13,7 @@ import { FluxoConversaModule } from './fluxo-conversa/fluxo-conversa.module';
 import { WorkerModule } from './worker/worker.module';
 import { CodigosOrigemModule } from './codigos-origem/codigos-origem.module';
 import { GatilhosCompraModule } from './gatilhos-compra/gatilhos-compra.module';
+import { EtapasJornadaModule } from './etapas-jornada/etapas-jornada.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { GatilhosCompraModule } from './gatilhos-compra/gatilhos-compra.module';
     FluxoConversaModule,
     CodigosOrigemModule,
     GatilhosCompraModule,
+    EtapasJornadaModule,
 
     // Worker: Crons + Filas BullMQ + Processors
     // Responsável por toda a automação de envio de lembretes
