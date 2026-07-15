@@ -4,10 +4,14 @@ import {
 import { LojasService } from './lojas.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { UsuarioAtual } from '../common/decorators/usuario-atual.decorator';
-import { IsString } from 'class-validator';
+import { IsString, IsBoolean } from 'class-validator';
 
 class AtualizarModeloDto {
   @IsString() modeloMensagem: string;
+}
+
+class AtualizarConfiguracaoInboxDto {
+  @IsBoolean() confirmarLeituraWa: boolean;
 }
 
 @UseGuards(JwtAuthGuard)
@@ -29,5 +33,15 @@ export class LojasController {
     @UsuarioAtual() usuario: any,
   ) {
     return this.lojasService.atualizarModeloMensagem(usuario.lojaId, dto.modeloMensagem);
+  }
+
+  // PATCH /api/v1/lojas/minha/configuracao — atualiza configurações de comportamento
+  @Patch('minha/configuracao')
+  @HttpCode(HttpStatus.OK)
+  atualizarConfiguracaoInbox(
+    @Body() dto: AtualizarConfiguracaoInboxDto,
+    @UsuarioAtual() usuario: any,
+  ) {
+    return this.lojasService.atualizarConfiguracaoInbox(usuario.lojaId, dto.confirmarLeituraWa);
   }
 }

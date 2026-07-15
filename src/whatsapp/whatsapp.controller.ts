@@ -1,6 +1,6 @@
 import {
-  Controller, UseGuards, Get, Post, Delete,
-  Body, Param, Query, HttpCode, HttpStatus,
+  Controller, UseGuards, Get, Post, Patch, Delete,
+  Body, Param, HttpCode, HttpStatus,
 } from '@nestjs/common';
 import { WhatsappService } from './whatsapp.service';
 import { WhatsappBaileysService } from './whatsapp-baileys.service';
@@ -74,6 +74,17 @@ export class WhatsappController {
   ) {
     await this.whatsappService.enviarMensagem(usuario.lojaId, dto.telefone, dto.conteudo);
     return { ok: true };
+  }
+
+  // PATCH /api/v1/whatsapp/conversas/:clienteId/lida — marca conversa como lida
+  @UseGuards(JwtAuthGuard)
+  @Patch('conversas/:clienteId/lida')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async marcarLida(
+    @Param('clienteId') clienteId: string,
+    @UsuarioAtual() usuario: UsuarioLogado,
+  ) {
+    await this.whatsappService.marcarConversaLida(usuario.lojaId, clienteId);
   }
 
   // DELETE /api/v1/whatsapp/conversas/:clienteId — soft-delete de uma conversa

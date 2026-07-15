@@ -56,12 +56,13 @@ export class WhatsappService {
         m.direcao,
         m.conteudo,
         m.tipo,
-        m.created_at   AS "criadoEm",
-        c.id           AS "clienteId",
-        c.nome         AS "clienteNome",
-        c.whatsapp_nome AS "clienteWhatsappNome",
+        m.created_at          AS "criadoEm",
+        m.lida_em IS NOT NULL AS "lida",
+        c.id                  AS "clienteId",
+        c.nome                AS "clienteNome",
+        c.whatsapp_nome       AS "clienteWhatsappNome",
         c.telefone,
-        c.origem_lead  AS "origemLead"
+        c.origem_lead         AS "origemLead"
       FROM mensagens_whatsapp m
       JOIN clientes c ON c.id = m.cliente_id
       WHERE m.loja_id    = ${lojaId}
@@ -69,6 +70,43 @@ export class WhatsappService {
       ORDER BY m.created_at ASC
       LIMIT 500
     `;
+  }
+
+  // Marca todas as mensagens recebidas de uma conversa como lidas
+  async marcarConversaLida(lojaId: string, clienteId: string) {
+    // Busca IDs das mensagens não lidas antes de marcar (necessário para Baileys readMessages)
+    const naoLidas = await this.sql`
+      SELECT m.whatsapp_message_id, c.telefone
+      FROM mensagens_whatsapp m
+      JOIN clientes c ON c.id = m.cliente_id
+      WHERE m.loja_id    = ${lojaId}
+        AND m.cliente_id = ${clienteId}
+        AND m.direcao    = 'recebida'
+        AND m.lida_em    IS NULL
+        AND m.deleted_at IS NULL
+        AND m.whatsapp_message_id IS NOT NULL
+      LIMIT 50
+    `;
+
+    await this.sql`
+      UPDATE mensagens_whatsapp
+      SET lida_em = NOW()
+      WHERE loja_id    = ${lojaId}
+        AND cliente_id = ${clienteId}
+        AND direcao    = 'recebida'
+        AND lida_em    IS NULL
+        AND deleted_at IS NULL
+    `;
+
+    // Confirmação de leitura no WhatsApp (se configurado pela loja)
+    if (naoLidas.length > 0) {
+      const [loja] = await this.sql`SELECT confirmar_leitura_wa FROM lojas WHERE id = ${lojaId}`;
+      if (loja?.confirmarLeituraWa) {
+        const telefone: string = naoLidas[0].telefone;
+        const messageIds: string[] = naoLidas.map((m: any) => m.whatsappMessageId).filter(Boolean);
+        await this.baileysService.marcarLidaNoWhatsApp(telefone, messageIds);
+      }
+    }
   }
 
   // Soft-delete de todas as mensagens de uma conversa

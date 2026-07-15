@@ -9,7 +9,7 @@ export class LojasService {
 
   async buscarMinha(lojaId: string) {
     const [loja] = await this.sql`
-      SELECT id, nome, email, modelo_mensagem FROM lojas WHERE id = ${lojaId}
+      SELECT id, nome, email, modelo_mensagem, confirmar_leitura_wa FROM lojas WHERE id = ${lojaId}
     `;
     if (!loja) throw new NotFoundException('Loja não encontrada');
     return loja;
@@ -20,7 +20,18 @@ export class LojasService {
       UPDATE lojas
       SET modelo_mensagem = ${modeloMensagem}, updated_at = NOW()
       WHERE id = ${lojaId}
-      RETURNING id, nome, modelo_mensagem
+      RETURNING id, nome, modelo_mensagem, confirmar_leitura_wa
+    `;
+    if (!atualizado) throw new NotFoundException('Loja não encontrada');
+    return atualizado;
+  }
+
+  async atualizarConfiguracaoInbox(lojaId: string, confirmarLeituraWa: boolean) {
+    const [atualizado] = await this.sql`
+      UPDATE lojas
+      SET confirmar_leitura_wa = ${confirmarLeituraWa}, updated_at = NOW()
+      WHERE id = ${lojaId}
+      RETURNING id, confirmar_leitura_wa
     `;
     if (!atualizado) throw new NotFoundException('Loja não encontrada');
     return atualizado;

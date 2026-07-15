@@ -1062,6 +1062,16 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  async marcarLidaNoWhatsApp(telefone: string, messageIds: string[]): Promise<void> {
+    if (!this.socket || this.status !== 'conectado' || messageIds.length === 0) return;
+    const numero = telefone.replace('+', '').replace(/\D/g, '');
+    const jid = `${numero}@s.whatsapp.net`;
+    const keys = messageIds.map((id) => ({ remoteJid: jid, id, fromMe: false }));
+    await this.socket.readMessages(keys).catch((e: any) =>
+      this.diag(`[Baileys] readMessages falhou: ${e?.message}`),
+    );
+  }
+
   async desconectar() {
     this.reconectando = false;
     await this.socket?.logout();
