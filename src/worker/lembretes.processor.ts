@@ -30,6 +30,7 @@ export class LembretesProcessor {
       lojaId,
       cicloId,
       clienteNome,
+      clienteWhatsappNome,
       clienteTelefone,
       produtoNome,
       produtoUnidade,
@@ -83,6 +84,7 @@ export class LembretesProcessor {
       await this.whatsappService.enviarLembrete({
         telefone: clienteTelefone,
         clienteNome,
+        clienteWhatsappNome: clienteWhatsappNome ?? null,
         produtoNome,
         quantidade,
         unidade: produtoUnidade,

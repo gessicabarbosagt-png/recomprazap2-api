@@ -53,10 +53,15 @@ export function normalizarResposta(texto: string): string | null {
 /**
  * Substitui variáveis {chave} no template pelos valores fornecidos.
  * Chaves sem correspondência são substituídas por string vazia.
+ * Quando {nome} é vazio, remove vírgulas adjacentes para evitar "Oi, !".
  */
 export function interpolarVariaveis(
   template: string,
   vars: Record<string, string>,
 ): string {
-  return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? '');
+  let tpl = template;
+  if (!vars['nome']) {
+    tpl = tpl.replace(/,\s*\{nome\}/g, '').replace(/\{nome\}\s*,\s*/g, '');
+  }
+  return tpl.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? '');
 }

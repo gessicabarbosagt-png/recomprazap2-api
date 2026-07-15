@@ -15,6 +15,7 @@ export class WhatsappService {
   async enviarLembrete(params: {
     telefone: string;
     clienteNome: string;
+    clienteWhatsappNome?: string | null;
     produtoNome: string;
     quantidade?: number;
     unidade?: string;
@@ -58,6 +59,7 @@ export class WhatsappService {
         m.created_at   AS "criadoEm",
         c.id           AS "clienteId",
         c.nome         AS "clienteNome",
+        c.whatsapp_nome AS "clienteWhatsappNome",
         c.telefone,
         c.origem_lead  AS "origemLead"
       FROM mensagens_whatsapp m

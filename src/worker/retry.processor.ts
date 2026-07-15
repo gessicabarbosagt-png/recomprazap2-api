@@ -29,8 +29,9 @@ export class RetryProcessor {
       SELECT
         l.id, l.ciclo_id, l.tentativa,
         cr.loja_id,
-        c.nome      AS cliente_nome,
-        c.telefone  AS cliente_telefone,
+        c.nome          AS cliente_nome,
+        c.whatsapp_nome AS whatsapp_nome,
+        c.telefone      AS cliente_telefone,
         p.nome      AS produto_nome,
         p.unidade   AS produto_unidade,
         cr.quantidade,
@@ -59,12 +60,13 @@ export class RetryProcessor {
     // mas mantemos o mesmo fluxo por simplicidade no MVP
     try {
       await this.whatsappService.enviarLembrete({
-        telefone:    original.clienteTelefone,
-        clienteNome: original.clienteNome,
-        produtoNome: original.produtoNome,
-        quantidade:  original.quantidade,
-        unidade:     original.produtoUnidade,
-        lembreteId:  retryLembrete.id,
+        telefone:            original.clienteTelefone,
+        clienteNome:         original.clienteNome,
+        clienteWhatsappNome: original.whatsappNome ?? null,
+        produtoNome:         original.produtoNome,
+        quantidade:          original.quantidade,
+        unidade:             original.produtoUnidade,
+        lembreteId:          retryLembrete.id,
         lojaId,
       });
 

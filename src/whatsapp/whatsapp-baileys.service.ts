@@ -425,6 +425,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     const tipoMsg = Object.keys(msg.message ?? {})[0] ?? 'desconhecido';
     const whatsappMsgId: string = msg.key.id ?? '';
+    const pushName: string | null = msg.pushName ?? null;
 
     // Mensagens de protocolo WhatsApp (sem conteúdo real) — ignorar completamente
     if (!texto && TIPOS_PROTOCOLO.has(tipoMsg)) {
@@ -447,7 +448,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     // Busca cliente ativo
     let [cliente] = await this.sql`
-      SELECT id, loja_id FROM clientes
+      SELECT id, loja_id, nome FROM clientes
       WHERE telefone = ${telefone} AND deleted_at IS NULL
       LIMIT 1
     `;
@@ -457,7 +458,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     // Se não existe cliente ativo, verifica se há um soft-deletado com esse número
     if (!cliente) {
       const [deletado] = await this.sql`
-        SELECT id, loja_id FROM clientes
+        SELECT id, loja_id, nome FROM clientes
         WHERE telefone = ${telefone} AND deleted_at IS NOT NULL
         LIMIT 1
       `;
@@ -468,7 +469,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           SET deleted_at = NULL, ativo = true, updated_at = NOW()
           WHERE id = ${deletado.id}
         `;
-        cliente = { id: deletado.id, lojaId: deletado.lojaId };
+        cliente = { id: deletado.id, lojaId: deletado.lojaId, nome: deletado.nome };
         this.diag(`[Baileys] cliente ${telefone} reativado após soft-delete (id=${deletado.id})`);
       }
     }
@@ -527,21 +528,39 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           this.diag(`[Baileys] NOVO CLIENTE ${telefone} — primeira mensagem sem texto (tipo=${Object.keys(contextInfo ?? {}).join(',')})`);
         }
 
+        const nomeInicial = pushName || telefone;
         const [novoCliente] = await this.sql`
           INSERT INTO clientes
-            (loja_id, nome, telefone, consentimento_whatsapp, origem_lead, origem_detalhe)
+            (loja_id, nome, telefone, consentimento_whatsapp, origem_lead, origem_detalhe, whatsapp_nome)
           VALUES (
             ${loja.id},
-            ${telefone},
+            ${nomeInicial},
             ${telefone},
             false,
             ${origemLead},
-            ${origemDetalhe ?? null}
+            ${origemDetalhe ?? null},
+            ${pushName}
           )
-          RETURNING id, loja_id
+          RETURNING id, loja_id, nome
         `;
         cliente = novoCliente;
-        this.diag(`[Baileys] cliente auto-criado: ${telefone} (loja=${loja.id} origem=${origemLead ?? 'desconhecida'})`);
+        this.diag(`[Baileys] cliente auto-criado: ${telefone} nome="${nomeInicial}" (loja=${loja.id} origem=${origemLead ?? 'desconhecida'})`);
+      }
+    }
+
+    // Atualiza whatsapp_nome sempre que pushName chegar; se nome ainda é o telefone, promove para o pushName
+    if (cliente && pushName) {
+      const nomeEhTelefone = cliente.nome === telefone;
+      if (nomeEhTelefone) {
+        await this.sql`
+          UPDATE clientes SET nome = ${pushName}, whatsapp_nome = ${pushName}, updated_at = NOW()
+          WHERE id = ${cliente.id}
+        `.catch(() => {});
+      } else {
+        await this.sql`
+          UPDATE clientes SET whatsapp_nome = ${pushName}, updated_at = NOW()
+          WHERE id = ${cliente.id}
+        `.catch(() => {});
       }
     }
 
@@ -940,13 +959,18 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   async enviarLembrete(params: {
     telefone: string;
     clienteNome: string;
+    clienteWhatsappNome?: string | null;
     produtoNome: string;
     quantidade?: number;
     unidade?: string;
     lembreteId: string;
     lojaId: string;
   }) {
-    const { telefone, clienteNome, produtoNome, quantidade, unidade, lembreteId, lojaId } = params;
+    const { telefone, clienteNome, clienteWhatsappNome, produtoNome, quantidade, unidade, lembreteId, lojaId } = params;
+
+    // Se o nome registrado é apenas o número de telefone, prefere o pushName do WhatsApp
+    const nomeEhTelefone = /^\+\d{8,15}$/.test(clienteNome.trim());
+    const nomeEfetivo = (nomeEhTelefone && clienteWhatsappNome) ? clienteWhatsappNome : clienteNome;
 
     // Carrega fluxo da loja para usar mensagem_lembrete configurada
     const [fluxo] = await this.sql`
@@ -960,7 +984,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     const [loja] = await this.sql`SELECT nome FROM lojas WHERE id = ${lojaId}`;
     const texto = interpolarVariaveis(templateBase, {
-      nome: clienteNome,
+      nome: nomeEfetivo,
       produto: produtoNome,
       quantidade: qtdTexto,
       loja: loja?.nome ?? '',

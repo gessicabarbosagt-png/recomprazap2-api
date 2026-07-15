@@ -14,7 +14,7 @@ export class ClientesService {
   async listar(lojaId: string) {
     return this.sql`
       SELECT id, nome, telefone, email, ativo, consentimento_whatsapp,
-             origem_lead, origem_detalhe, created_at
+             origem_lead, origem_detalhe, whatsapp_nome, created_at
       FROM clientes
       WHERE loja_id = ${lojaId}
         AND deleted_at IS NULL
@@ -25,7 +25,7 @@ export class ClientesService {
   async buscarPorId(id: string, lojaId: string) {
     const [cliente] = await this.sql`
       SELECT id, nome, telefone, email, ativo, consentimento_whatsapp,
-             origem_lead, origem_detalhe, created_at
+             origem_lead, origem_detalhe, whatsapp_nome, created_at
       FROM clientes
       WHERE id = ${id}
         AND loja_id = ${lojaId}
@@ -68,7 +68,7 @@ export class ClientesService {
         ${dto.origemDetalhe ?? null}
       )
       RETURNING id, nome, telefone, email, ativo, consentimento_whatsapp,
-                origem_lead, origem_detalhe, created_at
+                origem_lead, origem_detalhe, whatsapp_nome, created_at
     `;
 
     return novoCliente;
@@ -90,7 +90,7 @@ export class ClientesService {
       WHERE id = ${id}
         AND loja_id = ${lojaId}
       RETURNING id, nome, telefone, email, ativo, consentimento_whatsapp,
-                origem_lead, origem_detalhe, created_at
+                origem_lead, origem_detalhe, whatsapp_nome, created_at
     `;
 
     return atualizado;
