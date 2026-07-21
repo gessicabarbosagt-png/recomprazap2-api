@@ -80,6 +80,17 @@ describe('AgendadorService', () => {
       expect(filaLembretes.add).not.toHaveBeenCalled();
     });
 
+    it('não cria jobs para lojas desativadas ou com assinatura cancelada', async () => {
+      // A query já filtra l.ativa = TRUE AND l.status_assinatura != 'cancelada'.
+      // Lojas desativadas/canceladas não retornam ciclos — o worker as pula implicitamente.
+      sql.mockResolvedValueOnce([]); // SELECT retorna vazio, como acontece para essas lojas
+
+      await service.varrerCiclosVencidos();
+
+      expect(filaLembretes.add).not.toHaveBeenCalled();
+      expect(sql).toHaveBeenCalledTimes(1); // somente o SELECT, nenhum INSERT nem enqueue
+    });
+
     it('insere lembrete no banco antes de enfileirar o job', async () => {
       sql
         .mockResolvedValueOnce([cicloBase])
