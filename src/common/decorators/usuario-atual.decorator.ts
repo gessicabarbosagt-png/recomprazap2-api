@@ -30,4 +30,5 @@ export interface UsuarioLogado {
   id: string;
   lojaId: string;
   perfil: string;
+  role: string;
 }

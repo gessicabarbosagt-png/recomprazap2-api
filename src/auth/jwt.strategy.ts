@@ -20,11 +20,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   // O que validate retornar fica disponível como req.user em todo o sistema
-  async validate(payload: { sub: string; lojaId: string; perfil: string }) {
+  async validate(payload: { sub: string; lojaId: string; perfil: string; role: string }) {
     return {
       id: payload.sub,
-      lojaId: payload.lojaId,
+      lojaId: payload.lojaId ?? null,
       perfil: payload.perfil,
+      role: payload.role ?? 'lojista',
     };
   }
 }

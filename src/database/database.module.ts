@@ -15,6 +15,16 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
         const sql = postgres(connectionString, { max: 10, transform: postgres.camel });
 
         // Migrations de startup — idempotentes, seguras para rodar sempre
+
+        // Admin: role em usuarios + campos de assinatura e WA nas lojas
+        await sql`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'lojista'`.catch(() => {});
+        await sql`ALTER TABLE usuarios ALTER COLUMN loja_id DROP NOT NULL`.catch(() => {});
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS status_assinatura TEXT NOT NULL DEFAULT 'ativa'`.catch(() => {});
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS valor_mensalidade NUMERIC(10,2)`.catch(() => {});
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS proximo_vencimento DATE`.catch(() => {});
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS wa_status TEXT NOT NULL DEFAULT 'desconectado'`.catch(() => {});
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS wa_atualizado_em TIMESTAMPTZ`.catch(() => {});
+
         await sql`ALTER TABLE mensagens_whatsapp ADD COLUMN IF NOT EXISTS tipo VARCHAR(20)`.catch(() => {});
         await sql`
           CREATE TABLE IF NOT EXISTS baileys_auth_state (

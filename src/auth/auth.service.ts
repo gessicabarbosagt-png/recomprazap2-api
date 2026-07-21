@@ -14,19 +14,20 @@ export class AuthService {
   async login(loginDto: LoginDto) {
     const { email, senha } = loginDto;
 
-    // 1. Busca o usuário pelo email (junto com a loja para pegar o loja_id)
+    // LEFT JOIN: admin users have loja_id = NULL
     const [usuario] = await this.sql`
-      SELECT u.id, u.nome, u.email, u.senha_hash, u.perfil, u.loja_id, l.nome as loja_nome
+      SELECT u.id, u.nome, u.email, u.senha_hash, u.perfil, u.role, u.loja_id, l.nome as loja_nome
       FROM usuarios u
-      JOIN lojas l ON l.id = u.loja_id
+      LEFT JOIN lojas l ON l.id = u.loja_id
       WHERE u.email = ${email}
         AND u.deleted_at IS NULL
         AND u.ativo = TRUE
-        AND l.ativa = TRUE
+        AND (
+          u.role = 'admin'
+          OR (l.ativa = TRUE AND l.status_assinatura != 'cancelada')
+        )
     `;
 
-    // 2. Se não achou ou a senha não bate, retorna erro genérico
-    // (nunca diga se foi o email ou a senha que errou — segurança)
     if (!usuario) {
       throw new UnauthorizedException('Credenciais inválidas');
     }
@@ -38,8 +39,9 @@ export class AuthService {
 
     const payload = {
       sub: usuario.id,
-      lojaId: usuario.lojaId,
+      lojaId: usuario.lojaId ?? null,
       perfil: usuario.perfil,
+      role: usuario.role ?? 'lojista',
     };
 
     return {
@@ -49,10 +51,10 @@ export class AuthService {
         nome: usuario.nome,
         email: usuario.email,
         perfil: usuario.perfil,
-        loja: {
-          id: usuario.lojaId,
-          nome: usuario.lojaNome,
-        },
+        role: usuario.role ?? 'lojista',
+        loja: usuario.lojaId
+          ? { id: usuario.lojaId, nome: usuario.lojaNome }
+          : null,
       },
     };
   }

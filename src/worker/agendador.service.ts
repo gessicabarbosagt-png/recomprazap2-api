@@ -66,6 +66,7 @@ export class AgendadorService {
       WHERE cr.ativo = TRUE
         AND cr.deleted_at IS NULL
         AND l.ativa = TRUE
+        AND l.status_assinatura != 'cancelada'
         AND c.consentimento_whatsapp = TRUE   -- LGPD: só envia com consentimento
         AND cr.proxima_notificacao <= NOW()
         AND NOT EXISTS (

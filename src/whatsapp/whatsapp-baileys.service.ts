@@ -284,12 +284,14 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           this.qrAtual = null;
           this.reconectando = false;
           this.diag('[Baileys] ✅ WhatsApp conectado');
+          this.sql`UPDATE lojas SET wa_status = 'conectado', wa_atualizado_em = NOW() WHERE deleted_at IS NULL`.catch(() => {});
           this.tentarResolverPendentes().catch(() => {});
         }
 
         if (connection === 'close') {
           this.status = 'desconectado';
           this.qrAtual = null;
+          this.sql`UPDATE lojas SET wa_status = 'desconectado', wa_atualizado_em = NOW() WHERE deleted_at IS NULL`.catch(() => {});
 
           const statusCode = lastDisconnect?.error?.output?.statusCode;
           const errorMsg = lastDisconnect?.error?.message ?? '';
