@@ -107,19 +107,27 @@ export class ClientesService {
     `;
   }
 
+  // BRT é fixamente UTC-3 desde 2019
+  private brtIni(data: string): Date { return new Date(data + 'T00:00:00-03:00'); }
+  private brtFim(data: string): Date { return new Date(data + 'T23:59:59.999-03:00'); }
+
   // Contagem de clientes novos agrupados por origem no período
   async origensResumo(lojaId: string, diasAtras?: number, desde?: string, ate?: string) {
-    let filtroPeriodo: any;
-    if (diasAtras) {
-      filtroPeriodo = this.sql`AND created_at >= NOW() - (${diasAtras} || ' days')::INTERVAL`;
-    } else if (desde && ate) {
-      filtroPeriodo = this.sql`AND (created_at AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN ${desde}::date AND ${ate}::date`;
-    } else if (desde) {
-      filtroPeriodo = this.sql`AND (created_at AT TIME ZONE 'America/Sao_Paulo')::date >= ${desde}::date`;
-    } else {
-      filtroPeriodo = this.sql`AND created_at >= NOW() - '30 days'::INTERVAL`;
+    if (desde && ate) {
+      const ini = this.brtIni(desde), fim = this.brtFim(ate);
+      return this.sql`
+        SELECT
+          COALESCE(origem_lead, 'sem_origem') AS origem,
+          COUNT(*)::int                        AS total
+        FROM clientes
+        WHERE loja_id   = ${lojaId}
+          AND deleted_at IS NULL
+          AND created_at >= ${ini} AND created_at <= ${fim}
+        GROUP BY origem_lead
+        ORDER BY total DESC
+      `;
     }
-
+    const n = diasAtras ?? 30;
     return this.sql`
       SELECT
         COALESCE(origem_lead, 'sem_origem') AS origem,
@@ -127,7 +135,7 @@ export class ClientesService {
       FROM clientes
       WHERE loja_id   = ${lojaId}
         AND deleted_at IS NULL
-        ${filtroPeriodo}
+        AND created_at >= NOW() - (${n} || ' days')::INTERVAL
       GROUP BY origem_lead
       ORDER BY total DESC
     `;

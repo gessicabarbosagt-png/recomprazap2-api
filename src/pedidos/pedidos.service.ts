@@ -34,6 +34,10 @@ export class PedidosService {
     private readonly ciclosService: CiclosService,
   ) {}
 
+  // BRT é fixamente UTC-3 desde 2019 (sem horário de verão)
+  private brtIni(data: string): Date { return new Date(data + 'T00:00:00-03:00'); }
+  private brtFim(data: string): Date { return new Date(data + 'T23:59:59.999-03:00'); }
+
   async listar(lojaId: string, status?: string, statusJornada?: string, diasAtras?: number, desde?: string, ate?: string) {
     // Pedidos confirmados filtram por confirmado_em; demais por created_at
     const usarConfirmadoEm = statusJornada === 'comprou';
@@ -44,13 +48,15 @@ export class PedidosService {
         ? this.sql`AND p.confirmado_em >= NOW() - (${diasAtras} || ' days')::INTERVAL`
         : this.sql`AND p.created_at   >= NOW() - (${diasAtras} || ' days')::INTERVAL`;
     } else if (desde && ate) {
+      const ini = this.brtIni(desde), fim = this.brtFim(ate);
       filtroPeriodo = usarConfirmadoEm
-        ? this.sql`AND (p.confirmado_em AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN ${desde}::date AND ${ate}::date`
-        : this.sql`AND (p.created_at   AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN ${desde}::date AND ${ate}::date`;
+        ? this.sql`AND p.confirmado_em >= ${ini} AND p.confirmado_em <= ${fim}`
+        : this.sql`AND p.created_at   >= ${ini} AND p.created_at   <= ${fim}`;
     } else if (desde) {
+      const ini = this.brtIni(desde);
       filtroPeriodo = usarConfirmadoEm
-        ? this.sql`AND (p.confirmado_em AT TIME ZONE 'America/Sao_Paulo')::date >= ${desde}::date`
-        : this.sql`AND (p.created_at   AT TIME ZONE 'America/Sao_Paulo')::date >= ${desde}::date`;
+        ? this.sql`AND p.confirmado_em >= ${ini}`
+        : this.sql`AND p.created_at   >= ${ini}`;
     } else {
       filtroPeriodo = this.sql``;
     }
@@ -290,17 +296,26 @@ export class PedidosService {
   }
 
   async resumoPorPeriodo(lojaId: string, diasAtras?: number, desde?: string, ate?: string) {
-    let filtroPeriodo: any;
-    if (diasAtras) {
-      filtroPeriodo = this.sql`AND created_at >= NOW() - (${diasAtras} || ' days')::INTERVAL`;
-    } else if (desde && ate) {
-      filtroPeriodo = this.sql`AND (created_at AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN ${desde}::date AND ${ate}::date`;
-    } else if (desde) {
-      filtroPeriodo = this.sql`AND (created_at AT TIME ZONE 'America/Sao_Paulo')::date >= ${desde}::date`;
-    } else {
-      filtroPeriodo = this.sql`AND created_at >= NOW() - '30 days'::INTERVAL`;
+    // Período customizado: converte datas BRT para UTC e filtra por intervalo exato
+    if (desde && ate) {
+      const ini = this.brtIni(desde), fim = this.brtFim(ate);
+      const [resumo] = await this.sql`
+        SELECT
+          COUNT(*)                                        AS total_pedidos,
+          COUNT(*) FILTER (WHERE status = 'entregue')    AS total_entregues,
+          COUNT(*) FILTER (WHERE status = 'cancelado')   AS total_cancelados,
+          COUNT(*) FILTER (WHERE status = 'pendente')    AS total_pendentes,
+          COALESCE(SUM(quantidade * preco_unitario)
+            FILTER (WHERE status = 'entregue'), 0)        AS receita_estimada
+        FROM pedidos
+        WHERE loja_id = ${lojaId}
+          AND deleted_at IS NULL
+          AND created_at >= ${ini} AND created_at <= ${fim}
+      `;
+      return resumo;
     }
-
+    // Período relativo: N dias a partir de agora (default 30)
+    const n = diasAtras ?? 30;
     const [resumo] = await this.sql`
       SELECT
         COUNT(*)                                        AS total_pedidos,
@@ -312,46 +327,60 @@ export class PedidosService {
       FROM pedidos
       WHERE loja_id = ${lojaId}
         AND deleted_at IS NULL
-        ${filtroPeriodo}
+        AND created_at >= NOW() - (${n} || ' days')::INTERVAL
     `;
     return resumo;
   }
 
   async resumoJornada(lojaId: string, diasAtras?: number, desde?: string, ate?: string) {
     // total_pedidos: pedidos criados no período (created_at)
-    // total_compras / receita: vendas confirmadas no período (confirmado_em)
-    let filtroCriado: any;
-    let filtroConfirmado: any;
+    // total_compras / receita: vendas CONFIRMADAS no período (confirmado_em) — critério correto
 
-    if (diasAtras) {
-      filtroCriado     = this.sql`created_at    >= NOW() - (${diasAtras} || ' days')::INTERVAL`;
-      filtroConfirmado = this.sql`confirmado_em >= NOW() - (${diasAtras} || ' days')::INTERVAL`;
-    } else if (desde && ate) {
-      filtroCriado     = this.sql`(created_at    AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN ${desde}::date AND ${ate}::date`;
-      filtroConfirmado = this.sql`(confirmado_em AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN ${desde}::date AND ${ate}::date`;
-    } else if (desde) {
-      filtroCriado     = this.sql`(created_at    AT TIME ZONE 'America/Sao_Paulo')::date >= ${desde}::date`;
-      filtroConfirmado = this.sql`(confirmado_em AT TIME ZONE 'America/Sao_Paulo')::date >= ${desde}::date`;
-    } else {
-      filtroCriado     = this.sql`created_at    >= NOW() - '30 days'::INTERVAL`;
-      filtroConfirmado = this.sql`confirmado_em >= NOW() - '30 days'::INTERVAL`;
+    // Período customizado: converte datas BRT → UTC sem aninhamento em FILTER
+    if (desde && ate) {
+      const ini = this.brtIni(desde), fim = this.brtFim(ate);
+      const [resumo] = await this.sql`
+        SELECT
+          COUNT(*) FILTER (WHERE created_at    >= ${ini} AND created_at    <= ${fim})
+            AS total_pedidos,
+          COUNT(*) FILTER (WHERE status_jornada = 'comprou'
+                             AND confirmado_em >= ${ini} AND confirmado_em <= ${fim})
+            AS total_compras,
+          COUNT(*) FILTER (WHERE status_jornada = 'comprou'
+                             AND confirmado_em >= ${ini} AND confirmado_em <= ${fim}
+                             AND valor IS NULL)
+            AS compras_sem_valor,
+          COALESCE(
+            SUM(valor) FILTER (WHERE status_jornada = 'comprou'
+                                 AND confirmado_em >= ${ini} AND confirmado_em <= ${fim}),
+            0
+          ) AS receita_confirmada
+        FROM pedidos
+        WHERE loja_id = ${lojaId} AND deleted_at IS NULL
+      `;
+      return resumo;
     }
 
+    // Período relativo: N dias a partir de agora (default 30)
+    const n = diasAtras ?? 30;
     const [resumo] = await this.sql`
       SELECT
-        COUNT(*) FILTER (WHERE ${filtroCriado})
+        COUNT(*) FILTER (WHERE created_at    >= NOW() - (${n} || ' days')::INTERVAL)
           AS total_pedidos,
-        COUNT(*) FILTER (WHERE status_jornada = 'comprou' AND ${filtroConfirmado})
+        COUNT(*) FILTER (WHERE status_jornada = 'comprou'
+                           AND confirmado_em >= NOW() - (${n} || ' days')::INTERVAL)
           AS total_compras,
-        COUNT(*) FILTER (WHERE status_jornada = 'comprou' AND ${filtroConfirmado} AND valor IS NULL)
+        COUNT(*) FILTER (WHERE status_jornada = 'comprou'
+                           AND confirmado_em >= NOW() - (${n} || ' days')::INTERVAL
+                           AND valor IS NULL)
           AS compras_sem_valor,
         COALESCE(
-          SUM(valor) FILTER (WHERE status_jornada = 'comprou' AND ${filtroConfirmado}),
+          SUM(valor) FILTER (WHERE status_jornada = 'comprou'
+                               AND confirmado_em >= NOW() - (${n} || ' days')::INTERVAL),
           0
         ) AS receita_confirmada
       FROM pedidos
-      WHERE loja_id = ${lojaId}
-        AND deleted_at IS NULL
+      WHERE loja_id = ${lojaId} AND deleted_at IS NULL
     `;
     return resumo;
   }

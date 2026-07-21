@@ -137,19 +137,33 @@ export class LembretesService {
     return retry;
   }
 
+  // BRT é fixamente UTC-3 desde 2019
+  private brtIni(data: string): Date { return new Date(data + 'T00:00:00-03:00'); }
+  private brtFim(data: string): Date { return new Date(data + 'T23:59:59.999-03:00'); }
+
   // Resumo para o dashboard — nomes de coluna alinhados com a interface do frontend
   async resumoPorPeriodo(lojaId: string, diasAtras?: number, desde?: string, ate?: string) {
-    let filtroPeriodo: any;
-    if (diasAtras) {
-      filtroPeriodo = this.sql`AND created_at >= NOW() - (${diasAtras} || ' days')::INTERVAL`;
-    } else if (desde && ate) {
-      filtroPeriodo = this.sql`AND (created_at AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN ${desde}::date AND ${ate}::date`;
-    } else if (desde) {
-      filtroPeriodo = this.sql`AND (created_at AT TIME ZONE 'America/Sao_Paulo')::date >= ${desde}::date`;
-    } else {
-      filtroPeriodo = this.sql`AND created_at >= NOW() - '30 days'::INTERVAL`;
+    if (desde && ate) {
+      const ini = this.brtIni(desde), fim = this.brtFim(ate);
+      const [resumo] = await this.sql`
+        SELECT
+          COUNT(*) FILTER (WHERE status IN ('enviado','respondido','sem_resposta')) AS total,
+          COUNT(*) FILTER (WHERE status = 'enviado')      AS enviados,
+          COUNT(*) FILTER (WHERE status = 'respondido')   AS respondidos,
+          COUNT(*) FILTER (WHERE status = 'sem_resposta') AS sem_resposta,
+          COUNT(*) FILTER (WHERE status = 'cancelado')    AS cancelados,
+          ROUND(
+            COUNT(*) FILTER (WHERE status = 'respondido')::numeric
+            / NULLIF(COUNT(*) FILTER (WHERE status IN ('enviado','respondido','sem_resposta')), 0) * 100,
+            1
+          ) AS taxa_resposta_pct
+        FROM lembretes
+        WHERE loja_id = ${lojaId}
+          AND created_at >= ${ini} AND created_at <= ${fim}
+      `;
+      return resumo;
     }
-
+    const n = diasAtras ?? 30;
     const [resumo] = await this.sql`
       SELECT
         COUNT(*) FILTER (WHERE status IN ('enviado','respondido','sem_resposta')) AS total,
@@ -164,7 +178,7 @@ export class LembretesService {
         ) AS taxa_resposta_pct
       FROM lembretes
       WHERE loja_id = ${lojaId}
-        ${filtroPeriodo}
+        AND created_at >= NOW() - (${n} || ' days')::INTERVAL
     `;
     return resumo;
   }
