@@ -138,7 +138,18 @@ export class LembretesService {
   }
 
   // Resumo para o dashboard — nomes de coluna alinhados com a interface do frontend
-  async resumoPorPeriodo(lojaId: string, diasAtras: number) {
+  async resumoPorPeriodo(lojaId: string, diasAtras?: number, desde?: string, ate?: string) {
+    let filtroPeriodo: any;
+    if (diasAtras) {
+      filtroPeriodo = this.sql`AND created_at >= NOW() - (${diasAtras} || ' days')::INTERVAL`;
+    } else if (desde && ate) {
+      filtroPeriodo = this.sql`AND (created_at AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN ${desde}::date AND ${ate}::date`;
+    } else if (desde) {
+      filtroPeriodo = this.sql`AND (created_at AT TIME ZONE 'America/Sao_Paulo')::date >= ${desde}::date`;
+    } else {
+      filtroPeriodo = this.sql`AND created_at >= NOW() - '30 days'::INTERVAL`;
+    }
+
     const [resumo] = await this.sql`
       SELECT
         COUNT(*) FILTER (WHERE status IN ('enviado','respondido','sem_resposta')) AS total,
@@ -153,7 +164,7 @@ export class LembretesService {
         ) AS taxa_resposta_pct
       FROM lembretes
       WHERE loja_id = ${lojaId}
-        AND created_at >= NOW() - (${diasAtras} || ' days')::INTERVAL
+        ${filtroPeriodo}
     `;
     return resumo;
   }

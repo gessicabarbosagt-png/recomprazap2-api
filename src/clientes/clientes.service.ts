@@ -108,7 +108,18 @@ export class ClientesService {
   }
 
   // Contagem de clientes novos agrupados por origem no período
-  async origensResumo(lojaId: string, diasAtras: number) {
+  async origensResumo(lojaId: string, diasAtras?: number, desde?: string, ate?: string) {
+    let filtroPeriodo: any;
+    if (diasAtras) {
+      filtroPeriodo = this.sql`AND created_at >= NOW() - (${diasAtras} || ' days')::INTERVAL`;
+    } else if (desde && ate) {
+      filtroPeriodo = this.sql`AND (created_at AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN ${desde}::date AND ${ate}::date`;
+    } else if (desde) {
+      filtroPeriodo = this.sql`AND (created_at AT TIME ZONE 'America/Sao_Paulo')::date >= ${desde}::date`;
+    } else {
+      filtroPeriodo = this.sql`AND created_at >= NOW() - '30 days'::INTERVAL`;
+    }
+
     return this.sql`
       SELECT
         COALESCE(origem_lead, 'sem_origem') AS origem,
@@ -116,7 +127,7 @@ export class ClientesService {
       FROM clientes
       WHERE loja_id   = ${lojaId}
         AND deleted_at IS NULL
-        AND created_at >= NOW() - (${diasAtras} || ' days')::INTERVAL
+        ${filtroPeriodo}
       GROUP BY origem_lead
       ORDER BY total DESC
     `;

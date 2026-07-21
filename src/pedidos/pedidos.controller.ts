@@ -17,7 +17,7 @@ export class PedidosController {
     return this.pedidosService.criar(usuario.lojaId, dto);
   }
 
-  // GET /api/v1/pedidos?status=pendente&statusJornada=comprou&dias=30&desde=2025-01-01
+  // GET /api/v1/pedidos?status=pendente&statusJornada=comprou&dias=30&desde=2025-01-01&ate=2025-01-31
   @Get()
   listar(
     @UsuarioAtual() usuario: any,
@@ -25,6 +25,7 @@ export class PedidosController {
     @Query('statusJornada') statusJornada?: string,
     @Query('dias') dias?: string,
     @Query('desde') desde?: string,
+    @Query('ate') ate?: string,
   ) {
     return this.pedidosService.listar(
       usuario.lojaId,
@@ -32,19 +33,40 @@ export class PedidosController {
       statusJornada,
       dias ? parseInt(dias, 10) : undefined,
       desde,
+      ate,
     );
   }
 
-  // GET /api/v1/pedidos/resumo?dias=30
+  // GET /api/v1/pedidos/resumo?dias=30  ou  ?desde=2025-07-01&ate=2025-07-31
   @Get('resumo')
-  resumo(@UsuarioAtual() usuario: any, @Query('dias') dias = '30') {
-    return this.pedidosService.resumoPorPeriodo(usuario.lojaId, parseInt(dias, 10));
+  resumo(
+    @UsuarioAtual() usuario: any,
+    @Query('dias') dias?: string,
+    @Query('desde') desde?: string,
+    @Query('ate') ate?: string,
+  ) {
+    return this.pedidosService.resumoPorPeriodo(
+      usuario.lojaId,
+      dias ? parseInt(dias, 10) : undefined,
+      desde,
+      ate,
+    );
   }
 
-  // GET /api/v1/pedidos/resumo-jornada?dias=30
+  // GET /api/v1/pedidos/resumo-jornada?dias=30  ou  ?desde=2025-07-01&ate=2025-07-31
   @Get('resumo-jornada')
-  resumoJornada(@UsuarioAtual() usuario: any, @Query('dias') dias = '30') {
-    return this.pedidosService.resumoJornada(usuario.lojaId, parseInt(dias, 10));
+  resumoJornada(
+    @UsuarioAtual() usuario: any,
+    @Query('dias') dias?: string,
+    @Query('desde') desde?: string,
+    @Query('ate') ate?: string,
+  ) {
+    return this.pedidosService.resumoJornada(
+      usuario.lojaId,
+      dias ? parseInt(dias, 10) : undefined,
+      desde,
+      ate,
+    );
   }
 
   // GET /api/v1/pedidos/cliente/:clienteId/aberto

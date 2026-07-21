@@ -19,14 +19,20 @@ export class ClientesController {
     return this.clientesService.listar(usuario.lojaId);
   }
 
-  // GET /api/v1/clientes/origens?dias=30
-  // IMPORTANTE: deve vir antes de :id para não ser capturado como ID
+  // GET /api/v1/clientes/origens?dias=30  ou  ?desde=2025-07-01&ate=2025-07-31
   @Get('origens')
   origensResumo(
     @UsuarioAtual() usuario: UsuarioLogado,
     @Query('dias') dias?: string,
+    @Query('desde') desde?: string,
+    @Query('ate') ate?: string,
   ) {
-    return this.clientesService.origensResumo(usuario.lojaId, Number(dias ?? 30));
+    return this.clientesService.origensResumo(
+      usuario.lojaId,
+      dias ? Number(dias) : undefined,
+      desde,
+      ate,
+    );
   }
 
   // GET /api/v1/clientes/:id

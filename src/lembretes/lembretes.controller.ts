@@ -18,11 +18,20 @@ export class LembretesController {
     return this.lembretesService.listar(usuario.lojaId, status);
   }
 
-  // GET /api/v1/lembretes/resumo?dias=30
-  // Retorna métricas do período — usado pelo relatório periódico (RF-42)
+  // GET /api/v1/lembretes/resumo?dias=30  ou  ?desde=2025-07-01&ate=2025-07-31
   @Get('resumo')
-  resumo(@UsuarioAtual() usuario: any, @Query('dias') dias = '30') {
-    return this.lembretesService.resumoPorPeriodo(usuario.lojaId, parseInt(dias, 10));
+  resumo(
+    @UsuarioAtual() usuario: any,
+    @Query('dias') dias?: string,
+    @Query('desde') desde?: string,
+    @Query('ate') ate?: string,
+  ) {
+    return this.lembretesService.resumoPorPeriodo(
+      usuario.lojaId,
+      dias ? parseInt(dias, 10) : undefined,
+      desde,
+      ate,
+    );
   }
 
   // GET /api/v1/lembretes/:id
