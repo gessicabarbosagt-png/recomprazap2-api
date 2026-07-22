@@ -18,7 +18,7 @@ ALTER TABLE lojas ADD COLUMN IF NOT EXISTS proximo_vencimento DATE;
 ALTER TABLE lojas ADD COLUMN IF NOT EXISTS wa_status TEXT NOT NULL DEFAULT 'desconectado';
 ALTER TABLE lojas ADD COLUMN IF NOT EXISTS wa_atualizado_em TIMESTAMPTZ;
 
--- 5. Marca o usuário admin do sistema
+-- 5. Marca o usuário admin do sistema (preserva loja_id — admin pode ser lojista também)
 UPDATE usuarios
-SET role = 'admin', loja_id = NULL
+SET role = 'admin'
 WHERE email = 'gessicabarbosa.gt@gmail.com';

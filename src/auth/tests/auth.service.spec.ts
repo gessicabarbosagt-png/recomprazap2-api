@@ -16,10 +16,23 @@ const usuarioLojista = {
   lojaNome: 'Loja Maria',
 };
 
+// Admin que também é lojista (cenário real: dono do sistema é lojista da própria loja)
 const usuarioAdmin = {
   id: 'admin-uuid-1',
   nome: 'Admin',
   email: 'admin@system.com',
+  senhaHash: '$2b$12$fakeHash',
+  perfil: 'dono',
+  role: 'admin',
+  lojaId: 'loja-uuid-1',
+  lojaNome: 'BeeUp Pizzarias',
+};
+
+// Admin puro (sem loja vinculada) — também deve funcionar pela cláusula u.role='admin'
+const usuarioAdminSemLoja = {
+  id: 'admin-uuid-2',
+  nome: 'Admin Puro',
+  email: 'admin2@system.com',
   senhaHash: '$2b$12$fakeHash',
   perfil: 'dono',
   role: 'admin',
@@ -76,11 +89,21 @@ describe('AuthService', () => {
       .rejects.toThrow(UnauthorizedException);
   });
 
-  it('admin loga independente de loja (loja_id = NULL, sem restrição de status)', async () => {
+  it('admin com loja loga e retorna dados da loja no token', async () => {
     sql.mockResolvedValueOnce([usuarioAdmin]);
     jest.spyOn(bcrypt, 'compare').mockResolvedValueOnce(true as never);
 
     const resultado = await service.login({ email: 'admin@system.com', senha: 'adminpass' });
+
+    expect(resultado.usuario.role).toBe('admin');
+    expect(resultado.usuario.loja).toEqual({ id: 'loja-uuid-1', nome: 'BeeUp Pizzarias' });
+  });
+
+  it('admin sem loja (loja_id = NULL) também loga pela cláusula role=admin', async () => {
+    sql.mockResolvedValueOnce([usuarioAdminSemLoja]);
+    jest.spyOn(bcrypt, 'compare').mockResolvedValueOnce(true as never);
+
+    const resultado = await service.login({ email: 'admin2@system.com', senha: 'adminpass' });
 
     expect(resultado.usuario.role).toBe('admin');
     expect(resultado.usuario.loja).toBeNull();
