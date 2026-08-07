@@ -1,4 +1,4 @@
-import { Process, Processor } from '@nestjs/bull';
+import { Process, Processor, OnQueueFailed } from '@nestjs/bull';
 import { Logger, Inject } from '@nestjs/common';
 import { Job } from 'bull';
 import { DATABASE_CLIENT } from '../database/database.module';
@@ -123,6 +123,22 @@ export class LembretesProcessor {
       );
       throw err; // Re-lança para o BullMQ registrar a falha e retentar
     }
+  }
+
+  // Quando o Bull esgota todas as tentativas (job.failed), marca o lembrete como
+  // represado para que o lojista possa revisar na página /represados.
+  // Sem isso, o lembrete ficaria preso em 'agendado' para sempre, bloqueando o CRON.
+  @OnQueueFailed()
+  async onJobFailed(job: Job, _err: Error) {
+    if (job.name !== JOB_ENVIAR_LEMBRETE) return;
+    const maxAttempts = job.opts?.attempts ?? 3;
+    if (job.attemptsMade < maxAttempts) return; // ainda tem retries — aguarda
+    const { lembreteId } = job.data;
+    await this.sql`
+      UPDATE lembretes SET represado = TRUE, updated_at = NOW()
+      WHERE id = ${lembreteId} AND status = 'agendado'
+    `.catch(() => {});
+    this.logger.warn(`Lembrete ${lembreteId} represado após ${job.attemptsMade} falhas consecutivas`);
   }
 
   // ----------------------------------------------------------------

@@ -144,6 +144,28 @@ export class AgendadorService {
   }
 
   // ----------------------------------------------------------------
+  // CRON 3 — Roda a cada hora
+  // Limpa lembretes presos em 'enviado' há mais de 48h sem resposta nem retry.
+  // Cobre o caso de retries (tentativa >= 2) que o CRON 2 não trata
+  // e qualquer outro caso onde o lembrete ficou esquecido na fila.
+  // ----------------------------------------------------------------
+  @Cron(CronExpression.EVERY_HOUR)
+  async limparLembretesEnviadosAntigos() {
+    const result = await this.sql`
+      UPDATE lembretes SET status = 'sem_resposta', updated_at = NOW()
+      WHERE status = 'enviado'
+        AND enviado_em <= NOW() - INTERVAL '48 hours'
+        AND NOT EXISTS (
+          SELECT 1 FROM lembretes retry
+          WHERE retry.lembrete_pai_id = lembretes.id
+        )
+    `;
+    if (result.count > 0) {
+      this.logger.log(`${result.count} lembrete(s) antigos marcados como sem_resposta`);
+    }
+  }
+
+  // ----------------------------------------------------------------
   // Helpers
   // ----------------------------------------------------------------
 
