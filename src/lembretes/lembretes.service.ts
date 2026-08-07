@@ -137,6 +137,74 @@ export class LembretesService {
     return retry;
   }
 
+  async listarRepresados(lojaId: string) {
+    return this.sql`
+      SELECT
+        l.id,
+        l.agendado_para,
+        l.created_at,
+        c.nome           AS cliente_nome,
+        c.telefone       AS cliente_telefone,
+        p.nome           AS produto_nome,
+        p.unidade        AS produto_unidade,
+        cr.quantidade,
+        c.id             AS cliente_id,
+        cr.id            AS ciclo_id
+      FROM lembretes l
+      JOIN ciclos_recompra cr ON cr.id = l.ciclo_id
+      JOIN clientes c         ON c.id  = cr.cliente_id
+      JOIN produtos p         ON p.id  = cr.produto_id
+      WHERE l.loja_id   = ${lojaId}
+        AND l.represado = TRUE
+        AND l.status    = 'agendado'
+      ORDER BY l.agendado_para ASC
+    `;
+  }
+
+  async buscarRepresadoParaEnvio(id: string, lojaId: string) {
+    const [lembrete] = await this.sql`
+      SELECT
+        l.id, l.ciclo_id,
+        c.nome      AS cliente_nome,
+        c.telefone  AS cliente_telefone,
+        p.nome      AS produto_nome,
+        p.unidade   AS produto_unidade,
+        cr.quantidade
+      FROM lembretes l
+      JOIN ciclos_recompra cr ON cr.id = l.ciclo_id
+      JOIN clientes c         ON c.id  = cr.cliente_id
+      JOIN produtos p         ON p.id  = cr.produto_id
+      WHERE l.id      = ${id}
+        AND l.loja_id = ${lojaId}
+        AND l.represado = TRUE
+        AND l.status    = 'agendado'
+    `;
+    if (!lembrete) throw new NotFoundException('Lembrete represado não encontrado');
+    return lembrete;
+  }
+
+  async marcarRepresadoEnviado(id: string) {
+    await this.sql`
+      UPDATE lembretes SET
+        represado  = FALSE,
+        status     = 'enviado',
+        enviado_em = NOW(),
+        updated_at = NOW()
+      WHERE id = ${id}
+    `;
+  }
+
+  async descartarRepresado(id: string, lojaId: string) {
+    await this.sql`
+      UPDATE lembretes SET
+        represado  = FALSE,
+        status     = 'cancelado',
+        updated_at = NOW()
+      WHERE id = ${id} AND loja_id = ${lojaId}
+        AND represado = TRUE AND status = 'agendado'
+    `;
+  }
+
   // BRT é fixamente UTC-3 desde 2019
   private brtIni(data: string): Date { return new Date(data + 'T00:00:00-03:00'); }
   private brtFim(data: string): Date { return new Date(data + 'T23:59:59.999-03:00'); }

@@ -848,6 +848,28 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     return normalizarTexto(s);
   }
 
+  private extrairValorMonetario(texto: string): number | null {
+    // Tenta padrões do mais específico para o menos, priorizando R$
+    const padroes = [
+      /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{1,2})/i, // R$ 1.250,00
+      /R\$\s*(\d+,\d{1,2})/i,                  // R$ 89,90
+      /R\$\s*(\d+\.\d{1,2})/i,                 // R$ 89.90
+      /R\$\s*(\d+)/i,                           // R$ 89
+      /(\d{1,3}(?:\.\d{3})+,\d{1,2})/,         // 1.250,00
+      /(\d+,\d{2})/,                            // 89,90
+    ];
+    for (const p of padroes) {
+      const m = p.exec(texto);
+      if (m) {
+        let raw = m[1];
+        if (raw.includes(',')) raw = raw.replace(/\./g, '').replace(',', '.');
+        const v = parseFloat(raw);
+        if (!isNaN(v) && v > 0) return v;
+      }
+    }
+    return null;
+  }
+
   private async verificarGatilhoCompra(telefone: string, texto: string, lojaId: string): Promise<void> {
     const textoNorm = this.normalizarTexto(texto);
 
@@ -897,6 +919,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       SELECT id FROM etapas_jornada WHERE loja_id = ${lojaId} AND tipo = 'final_comprou' LIMIT 1
     `;
 
+    const valor = this.extrairValorMonetario(texto);
+    this.diag(`[GATILHO] valor extraído da mensagem: ${valor ?? 'nenhum'}`);
+
     if (pedidoAberto) {
       await this.sql`
         UPDATE pedidos SET
@@ -904,17 +929,18 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           status_jornada = 'comprou',
           confirmado_por = 'palavra_chave',
           confirmado_em  = NOW(),
+          valor          = COALESCE(${valor}, valor),
           updated_at     = NOW()
         WHERE id = ${pedidoAberto.id}
       `;
-      this.diag(`[GATILHO] pedido ${pedidoAberto.id} → comprou via palavra_chave`);
+      this.diag(`[GATILHO] pedido ${pedidoAberto.id} → comprou via palavra_chave, valor=${valor ?? 'não capturado'}`);
     } else {
       // Venda que não veio de lembrete — cria pedido direto
       await this.sql`
-        INSERT INTO pedidos (loja_id, cliente_id, etapa_id, status_jornada, confirmado_por, confirmado_em)
-        VALUES (${lojaId}, ${cliente.id}, ${etapaComprou?.id ?? null}, 'comprou', 'palavra_chave', NOW())
+        INSERT INTO pedidos (loja_id, cliente_id, etapa_id, status_jornada, confirmado_por, confirmado_em, valor)
+        VALUES (${lojaId}, ${cliente.id}, ${etapaComprou?.id ?? null}, 'comprou', 'palavra_chave', NOW(), ${valor})
       `;
-      this.diag(`[GATILHO] nenhum pedido aberto para cliente=${cliente.id} — pedido direto criado via palavra_chave`);
+      this.diag(`[GATILHO] nenhum pedido aberto para cliente=${cliente.id} — pedido direto criado via palavra_chave, valor=${valor ?? 'não capturado'}`);
     }
   }
 

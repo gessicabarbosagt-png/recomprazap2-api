@@ -206,6 +206,7 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
           WHERE NOT EXISTS (SELECT 1 FROM etapas_jornada ej WHERE ej.loja_id = l.id)
         `.catch(() => {});
         await sql`ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS etapa_id UUID REFERENCES etapas_jornada(id)`.catch(() => {});
+        await sql`ALTER TABLE lembretes ADD COLUMN IF NOT EXISTS represado BOOLEAN NOT NULL DEFAULT FALSE`.catch(() => {});
         await sql`
           UPDATE pedidos p
           SET etapa_id = (

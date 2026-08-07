@@ -42,6 +42,16 @@ export class LembretesProcessor {
 
     this.logger.log(`Processando lembrete ${lembreteId} para ${clienteNome}`);
 
+    // ---- Verifica se o WhatsApp está conectado ----
+    // Se desconectado, represa o lembrete (não retenta) para revisão manual.
+    if (!this.whatsappService.estaConectado()) {
+      await this.sql`
+        UPDATE lembretes SET represado = TRUE, updated_at = NOW() WHERE id = ${lembreteId}
+      `;
+      this.logger.log(`Lembrete ${lembreteId} represado — WhatsApp desconectado`);
+      return { represado: true };
+    }
+
     // ---- Verifica horário de funcionamento ----
     // Se a loja não está aberta agora, reagenda para o próximo horário de abertura.
     // Isso evita mandar mensagem às 3h da manhã.

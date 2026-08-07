@@ -11,6 +11,10 @@ export class WhatsappService {
     private readonly baileysService: WhatsappBaileysService,
   ) {}
 
+  estaConectado(): boolean {
+    return this.baileysService.estaConectado();
+  }
+
   // Chamado pelo worker de lembretes e pelo CiclosService — delega ao Baileys
   async enviarLembrete(params: {
     telefone: string;

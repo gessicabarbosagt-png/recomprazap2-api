@@ -1,18 +1,21 @@
 import {
   Controller, UseGuards, Get, Post, Patch, Delete,
-  Param, Body, Query, ParseUUIDPipe,
+  Param, Body, Query, ParseUUIDPipe, BadRequestException,
 } from '@nestjs/common';
 import { LembretesService } from './lembretes.service';
+import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { UsuarioAtual } from '../common/decorators/usuario-atual.decorator';
 
 @UseGuards(JwtAuthGuard)
 @Controller('lembretes')
 export class LembretesController {
-  constructor(private readonly lembretesService: LembretesService) {}
+  constructor(
+    private readonly lembretesService: LembretesService,
+    private readonly whatsappService: WhatsappService,
+  ) {}
 
   // GET /api/v1/lembretes?status=agendado
-  // O query param status é opcional — sem ele, retorna todos
   @Get()
   listar(@UsuarioAtual() usuario: any, @Query('status') status?: string) {
     return this.lembretesService.listar(usuario.lojaId, status);
@@ -34,6 +37,12 @@ export class LembretesController {
     );
   }
 
+  // GET /api/v1/lembretes/represados
+  @Get('represados')
+  listarRepresados(@UsuarioAtual() usuario: any) {
+    return this.lembretesService.listarRepresados(usuario.lojaId);
+  }
+
   // GET /api/v1/lembretes/:id
   @Get(':id')
   buscar(
@@ -44,7 +53,6 @@ export class LembretesController {
   }
 
   // POST /api/v1/lembretes/agendar
-  // Agenda manualmente um lembrete para um ciclo
   @Post('agendar')
   agendar(
     @Body() body: { cicloId: string; agendadoPara?: string },
@@ -54,6 +62,57 @@ export class LembretesController {
     return this.lembretesService.agendar(body.cicloId, usuario.lojaId, quando);
   }
 
+  // POST /api/v1/lembretes/represados/enviar-todos
+  @Post('represados/enviar-todos')
+  async enviarTodosRepresados(@UsuarioAtual() usuario: any) {
+    if (!this.whatsappService.estaConectado()) {
+      throw new BadRequestException('WhatsApp desconectado — conecte antes de enviar');
+    }
+    const lista = await this.lembretesService.listarRepresados(usuario.lojaId);
+    const resultados = { enviados: 0, erros: 0 };
+    for (const l of lista) {
+      try {
+        await this.whatsappService.enviarLembrete({
+          telefone:      l.clienteTelefone,
+          clienteNome:   l.clienteNome,
+          produtoNome:   l.produtoNome,
+          quantidade:    l.quantidade,
+          unidade:       l.produtoUnidade,
+          lembreteId:    l.id,
+          lojaId:        usuario.lojaId,
+        });
+        await this.lembretesService.marcarRepresadoEnviado(l.id);
+        resultados.enviados++;
+      } catch {
+        resultados.erros++;
+      }
+    }
+    return resultados;
+  }
+
+  // POST /api/v1/lembretes/:id/enviar-represado
+  @Post(':id/enviar-represado')
+  async enviarRepresado(
+    @Param('id', ParseUUIDPipe) id: string,
+    @UsuarioAtual() usuario: any,
+  ) {
+    if (!this.whatsappService.estaConectado()) {
+      throw new BadRequestException('WhatsApp desconectado — conecte antes de enviar');
+    }
+    const l = await this.lembretesService.buscarRepresadoParaEnvio(id, usuario.lojaId);
+    await this.whatsappService.enviarLembrete({
+      telefone:    l.clienteTelefone,
+      clienteNome: l.clienteNome,
+      produtoNome: l.produtoNome,
+      quantidade:  l.quantidade,
+      unidade:     l.produtoUnidade,
+      lembreteId:  l.id,
+      lojaId:      usuario.lojaId,
+    });
+    await this.lembretesService.marcarRepresadoEnviado(id);
+    return { enviado: true };
+  }
+
   // PATCH /api/v1/lembretes/:id/cancelar
   @Patch(':id/cancelar')
   cancelar(
@@ -61,5 +120,14 @@ export class LembretesController {
     @UsuarioAtual() usuario: any,
   ) {
     return this.lembretesService.cancelar(id, usuario.lojaId);
+  }
+
+  // DELETE /api/v1/lembretes/:id/descartar
+  @Delete(':id/descartar')
+  descartar(
+    @Param('id', ParseUUIDPipe) id: string,
+    @UsuarioAtual() usuario: any,
+  ) {
+    return this.lembretesService.descartarRepresado(id, usuario.lojaId);
   }
 }
