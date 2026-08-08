@@ -482,60 +482,80 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     // Auto-cria cliente novo com captura de origem (só se não existe nenhum registro, nem deletado)
     if (!cliente) {
-      const [loja] = await this.sql`SELECT id FROM lojas LIMIT 1`;
-      if (loja) {
-        // Loga o contextInfo completo para descobrir campos reais do CTWA
-        if (contextInfo) {
-          this.logger.log(`[CTWA] contextInfo de ${telefone}: ${JSON.stringify(contextInfo, null, 2)}`);
-        }
+      // Loga o contextInfo completo para descobrir campos reais do CTWA
+      if (contextInfo) {
+        this.logger.log(`[CTWA] contextInfo de ${telefone}: ${JSON.stringify(contextInfo, null, 2)}`);
+      }
 
-        const externalAdReply = contextInfo?.externalAdReply;
-        let origemLead: string | null = null;
-        let origemDetalhe: any = null;
+      const externalAdReply = contextInfo?.externalAdReply;
+      let origemLead: string | null = null;
+      let origemDetalhe: any = null;
+      let lojaIdNovo: string | null = null;
 
-        if (externalAdReply) {
-          // Click-to-WhatsApp via Meta Ads
-          origemLead = 'meta_ads';
-          origemDetalhe = {
-            sourceUrl:              externalAdReply.sourceUrl ?? null,
-            title:                  externalAdReply.title ?? null,
-            body:                   externalAdReply.body ?? null,
-            sourceId:               externalAdReply.sourceId ?? null,
-            sourceType:             externalAdReply.sourceType ?? null,
-            mediaType:              externalAdReply.mediaType ?? null,
-            renderLargerThumbnail:  externalAdReply.renderLargerThumbnail ?? null,
-          };
-          this.diag(`[Baileys] CTWA detectado para ${telefone}: sourceUrl=${origemDetalhe.sourceUrl} title="${origemDetalhe.title}"`);
-        } else if (texto) {
-          // Verifica códigos de rastreio configurados pelo lojista (#codigo → rotulo)
-          const codigos = await this.sql`
-            SELECT codigo, rotulo FROM codigos_origem WHERE loja_id = ${loja.id}
-          `;
-          for (const { codigo, rotulo } of codigos) {
-            const padraoComHash = `#${codigo}`.toLowerCase();
-            if (texto.toLowerCase().includes(padraoComHash)) {
-              origemLead = rotulo;
-              origemDetalhe = { codigo };
-              // Remove o código de rastreio da mensagem exibida no inbox
-              const regex = new RegExp(`#${codigo}`, 'gi');
-              textoExibido = texto.replace(regex, '').trim();
-              this.diag(`[Baileys] ORIGEM DETECTADA: código #${codigo} → "${rotulo}" para ${telefone}`);
-              break;
-            }
+      if (externalAdReply) {
+        // Click-to-WhatsApp via Meta Ads
+        origemLead = 'meta_ads';
+        origemDetalhe = {
+          sourceUrl:              externalAdReply.sourceUrl ?? null,
+          title:                  externalAdReply.title ?? null,
+          body:                   externalAdReply.body ?? null,
+          sourceId:               externalAdReply.sourceId ?? null,
+          sourceType:             externalAdReply.sourceType ?? null,
+          mediaType:              externalAdReply.mediaType ?? null,
+          renderLargerThumbnail:  externalAdReply.renderLargerThumbnail ?? null,
+        };
+        this.diag(`[Baileys] CTWA detectado para ${telefone}: sourceUrl=${origemDetalhe.sourceUrl} title="${origemDetalhe.title}"`);
+      }
+
+      // Verifica códigos de rastreio em TODAS as lojas ativas — a loja dona do código
+      // é a loja correta para o novo cliente (tracking code #codigo → loja explícita)
+      if (!lojaIdNovo && texto) {
+        const todosOsCodigos = await this.sql`
+          SELECT co.codigo, co.rotulo, co.loja_id
+          FROM codigos_origem co
+          JOIN lojas l ON l.id = co.loja_id
+          WHERE l.ativa = TRUE
+        `;
+        for (const { codigo, rotulo, lojaId: codLojaId } of todosOsCodigos) {
+          const padraoComHash = `#${codigo}`.toLowerCase();
+          if (texto.toLowerCase().includes(padraoComHash)) {
+            lojaIdNovo = codLojaId;
+            origemLead = origemLead ?? rotulo;
+            origemDetalhe = origemDetalhe ?? { codigo };
+            const regex = new RegExp(`#${codigo}`, 'gi');
+            textoExibido = texto.replace(regex, '').trim();
+            this.diag(`[Baileys] ORIGEM DETECTADA: código #${codigo} → "${rotulo}" loja=${lojaIdNovo} para ${telefone}`);
+            break;
           }
-          if (!origemLead) {
-            this.diag(`[Baileys] NOVO CLIENTE ${telefone} — primeira mensagem sem código de origem: "${texto.slice(0, 80)}"`);
-          }
-        } else {
-          this.diag(`[Baileys] NOVO CLIENTE ${telefone} — primeira mensagem sem texto (tipo=${Object.keys(contextInfo ?? {}).join(',')})`);
         }
+        if (!lojaIdNovo) {
+          this.diag(`[Baileys] NOVO CLIENTE ${telefone} — primeira mensagem sem código de origem: "${texto.slice(0, 80)}"`);
+        }
+      } else if (!lojaIdNovo && !texto) {
+        this.diag(`[Baileys] NOVO CLIENTE ${telefone} — primeira mensagem sem texto (tipo=${Object.keys(contextInfo ?? {}).join(',')})`);
+      }
 
+      // Fallback explícito: loja principal (mais antiga ativa).
+      // Em setup multi-loja, configure tracking codes (#codigo) para atribuição explícita.
+      if (!lojaIdNovo) {
+        const [lojaPrincipal] = await this.sql`
+          SELECT id FROM lojas WHERE ativa = TRUE ORDER BY created_at ASC LIMIT 1
+        `;
+        if (lojaPrincipal) {
+          lojaIdNovo = lojaPrincipal.id;
+          this.logger.warn(
+            `[MULTI-LOJA] novo cliente ${telefone} sem código de origem — atribuído à loja principal ${lojaIdNovo}`,
+          );
+        }
+      }
+
+      if (lojaIdNovo) {
         const nomeInicial = pushName || telefone;
         const [novoCliente] = await this.sql`
           INSERT INTO clientes
             (loja_id, nome, telefone, consentimento_whatsapp, origem_lead, origem_detalhe, whatsapp_nome)
           VALUES (
-            ${loja.id},
+            ${lojaIdNovo},
             ${nomeInicial},
             ${telefone},
             false,
@@ -546,7 +566,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           RETURNING id, loja_id, nome
         `;
         cliente = novoCliente;
-        this.diag(`[Baileys] cliente auto-criado: ${telefone} nome="${nomeInicial}" (loja=${loja.id} origem=${origemLead ?? 'desconhecida'})`);
+        this.diag(`[Baileys] cliente auto-criado: ${telefone} nome="${nomeInicial}" (loja=${lojaIdNovo} origem=${origemLead ?? 'desconhecida'})`);
       }
     }
 
@@ -566,12 +586,16 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    await this.registrarMensagem({
-      telefone,
-      direcao: 'recebida',
-      conteudo: textoExibido || `[${tipoMsg}]`,
-      whatsappMsgId,
-    });
+    // lojaId vem do cliente existente (derivado do número) — única fonte possível para msgs recebidas
+    if (cliente) {
+      await this.registrarMensagem({
+        telefone,
+        lojaId: cliente.lojaId,
+        direcao: 'recebida',
+        conteudo: textoExibido || `[${tipoMsg}]`,
+        whatsappMsgId,
+      });
+    }
 
     if (cliente) {
       await this.processarComFluxo(cliente.id, cliente.lojaId, textoExibido || texto, telefone);
@@ -632,7 +656,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         const fallbackMsg = fluxo.mensagemFallback ?? fluxo.mensagem_fallback;
         const fallbackMsgId = await this.enviarMensagem(telefone, fallbackMsg, lojaId);
         // Salva no banco imediatamente — eco de envio chega como type='append' e não é processado
-        await this.registrarMensagem({ telefone, direcao: 'enviada', conteudo: fallbackMsg, whatsappMsgId: fallbackMsgId || null, origem: 'sistema' });
+        await this.registrarMensagem({ telefone, lojaId, direcao: 'enviada', conteudo: fallbackMsg, whatsappMsgId: fallbackMsgId || null, origem: 'sistema' });
         this.diag(`[FLUXO] mensagem fallback enviada para ${telefone}`);
       } else {
         this.diag(`[FLUXO] ${novosFallbacks} fallbacks para ${telefone} — parando respostas automáticas`);
@@ -644,7 +668,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     // Match encontrado! Salva no banco imediatamente — eco de envio chega como type='append' e não é processado
     const respostaMsgId = await this.enviarMensagem(telefone, opcaoMatch.mensagem_resposta, lojaId);
-    await this.registrarMensagem({ telefone, direcao: 'enviada', conteudo: opcaoMatch.mensagem_resposta, whatsappMsgId: respostaMsgId || null, origem: 'sistema' });
+    await this.registrarMensagem({ telefone, lojaId, direcao: 'enviada', conteudo: opcaoMatch.mensagem_resposta, whatsappMsgId: respostaMsgId || null, origem: 'sistema' });
     this.diag(`[FLUXO] mensagem resposta enviada para ${telefone}: "${opcaoMatch.mensagem_resposta.slice(0, 60)}"`);
 
     if (opcaoMatch.acao !== 'nenhuma' && sessao.lembreteId) {
@@ -818,8 +842,19 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     if (!texto && TIPOS_PROTOCOLO.has(tipoMsg)) return;
 
+    // Busca o cliente uma única vez para obter o lojaId correto (Bug C + D)
+    const [clienteCelular] = await this.sql`
+      SELECT id, loja_id FROM clientes WHERE telefone = ${telefone} AND deleted_at IS NULL LIMIT 1
+    `;
+
+    if (!clienteCelular) {
+      this.diag(`[Baileys] celular: cliente não encontrado para ${telefone} — msg não salva`);
+      return;
+    }
+
     const salvo = await this.registrarMensagem({
       telefone,
+      lojaId: clienteCelular.lojaId,
       direcao: 'enviada',
       conteudo: texto || `[${tipoMsg}]`,
       whatsappMsgId,
@@ -830,14 +865,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       this.diag(`[Baileys] msg celular salva → ${telefone}: "${texto.slice(0, 60)}"`);
       // Só verifica gatilho para mensagens reais do celular (ecos do sistema têm salvo === 0)
       if (texto) {
-        const [c] = await this.sql`
-          SELECT loja_id FROM clientes WHERE telefone = ${telefone} AND deleted_at IS NULL LIMIT 1
-        `;
-        if (c) {
-          await this.verificarGatilhoCompra(telefone, texto, c.lojaId).catch((e: any) =>
-            this.diag(`[Baileys] erro em verificarGatilhoCompra: ${e?.message}`),
-          );
-        }
+        await this.verificarGatilhoCompra(telefone, texto, clienteCelular.lojaId).catch((e: any) =>
+          this.diag(`[Baileys] erro em verificarGatilhoCompra: ${e?.message}`),
+        );
       }
     }
     // salvo === 0: eco de msg do sistema (whatsapp_message_id já existia) → ignorado
@@ -896,10 +926,10 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     this.diag(`[GATILHO] MATCH frase="${match.frase}" para ${telefone}`);
 
     const [cliente] = await this.sql`
-      SELECT id FROM clientes WHERE telefone = ${telefone} AND deleted_at IS NULL LIMIT 1
+      SELECT id FROM clientes WHERE telefone = ${telefone} AND loja_id = ${lojaId} AND deleted_at IS NULL LIMIT 1
     `;
     if (!cliente) {
-      this.diag(`[GATILHO] cliente não encontrado para ${telefone} — abortando`);
+      this.diag(`[GATILHO] cliente não encontrado para ${telefone} loja=${lojaId} — abortando`);
       return;
     }
     this.diag(`[GATILHO] cliente encontrado id=${cliente.id}`);
@@ -946,6 +976,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
   private async registrarMensagem(params: {
     telefone: string;
+    lojaId: string;
     direcao: 'recebida' | 'enviada';
     conteudo: string;
     whatsappMsgId?: string | null;
@@ -967,6 +998,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           ${params.origem ?? null}
         FROM clientes c
         WHERE c.telefone = ${params.telefone}
+          AND c.loja_id = ${params.lojaId}
           AND c.deleted_at IS NULL
         LIMIT 1
         ON CONFLICT (loja_id, whatsapp_message_id)
@@ -1020,7 +1052,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     const msgId = await this.enviarMensagem(telefone, texto, lojaId);
     await this.registrarMensagem({
-      telefone, direcao: 'enviada', conteudo: texto, lembreteId,
+      telefone, lojaId, direcao: 'enviada', conteudo: texto, lembreteId,
       whatsappMsgId: msgId || null, origem: 'sistema',
     });
 
