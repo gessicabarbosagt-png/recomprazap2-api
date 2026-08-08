@@ -1110,12 +1110,15 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
   async reconectar() {
     this.logger.log('[Baileys] reconectar() chamado manualmente');
-    this.reconectando = false;
+    // Seta reconectando=true ANTES de end() para que o handler connection.close
+    // do socket antigo não dispare um segundo iniciarSessao() concorrente.
+    this.reconectando = true;
     this.socket?.end(undefined);
     this.socket = null;
     this.qrAtual = null;
     this.status = 'desconectado';
     await this.sql`DELETE FROM baileys_auth_state`.catch(() => {});
+    this.reconectando = false;
     await this.iniciarSessao();
   }
 }

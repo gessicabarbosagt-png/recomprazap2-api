@@ -1,4 +1,5 @@
 import { Injectable, Logger, Inject } from '@nestjs/common';
+import { OnApplicationBootstrap } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -11,15 +12,8 @@ import {
   JOB_RETRY_LEMBRETE,
 } from './worker.constants';
 
-// AgendadorService é o "despertador" do sistema.
-// Roda em background e fica monitorando o banco para disparar jobs.
-//
-// Dois Crons principais:
-//   1. A cada 5 minutos: varre ciclos com proxima_notificacao vencida → agenda lembrete
-//   2. A cada 10 minutos: varre lembretes enviados sem resposta → agenda retry
-
 @Injectable()
-export class AgendadorService {
+export class AgendadorService implements OnApplicationBootstrap {
   private readonly logger = new Logger(AgendadorService.name);
 
   constructor(
@@ -27,6 +21,20 @@ export class AgendadorService {
     @InjectQueue(FILA_LEMBRETES) private readonly filaLembretes: Queue,
     @InjectQueue(FILA_RETRY) private readonly filaRetry: Queue,
   ) {}
+
+  // Cancela lembretes presos como 'agendado' há mais de 4 horas.
+  // Esses lembretes ficaram orphãos porque o Bull esgotou retries sem
+  // @OnQueueFailed existir (27/07 outage). CRON 1 bloqueava nesses registros.
+  async onApplicationBootstrap() {
+    const result = await this.sql`
+      UPDATE lembretes SET status = 'cancelado', updated_at = NOW()
+      WHERE status = 'agendado'
+        AND created_at < NOW() - INTERVAL '4 hours'
+    `;
+    if (result.count > 0) {
+      this.logger.log(`Bootstrap: ${result.count} lembrete(s) presos cancelados (outage 27/07)`);
+    }
+  }
 
   // ----------------------------------------------------------------
   // CRON 1 — Roda a cada 5 minutos
