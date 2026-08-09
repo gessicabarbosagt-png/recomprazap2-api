@@ -11,11 +11,10 @@ export class WhatsappService {
     private readonly baileysService: WhatsappBaileysService,
   ) {}
 
-  estaConectado(): boolean {
-    return this.baileysService.estaConectado();
+  estaConectado(lojaId: string): boolean {
+    return this.baileysService.estaConectado(lojaId);
   }
 
-  // Chamado pelo worker de lembretes e pelo CiclosService — delega ao Baileys
   async enviarLembrete(params: {
     telefone: string;
     clienteNome: string;
@@ -29,9 +28,8 @@ export class WhatsappService {
     return this.baileysService.enviarLembrete(params);
   }
 
-  // Envia mensagem avulsa (ex: resposta manual do painel)
   async enviarMensagem(lojaId: string, telefone: string, conteudo: string) {
-    const msgId = await this.baileysService.enviarMensagem(telefone, conteudo);
+    const msgId = await this.baileysService.enviarMensagem(telefone, conteudo, lojaId);
 
     try {
       await this.sql`
@@ -52,7 +50,6 @@ export class WhatsappService {
     }
   }
 
-  // Lista o histórico de mensagens de uma loja (exclui conversas deletadas e msgs de protocolo)
   async listarMensagens(lojaId: string) {
     return this.sql`
       SELECT
@@ -76,9 +73,7 @@ export class WhatsappService {
     `;
   }
 
-  // Marca todas as mensagens recebidas de uma conversa como lidas
   async marcarConversaLida(lojaId: string, clienteId: string) {
-    // Busca IDs das mensagens não lidas antes de marcar (necessário para Baileys readMessages)
     const naoLidas = await this.sql`
       SELECT m.whatsapp_message_id, c.telefone
       FROM mensagens_whatsapp m
@@ -102,18 +97,16 @@ export class WhatsappService {
         AND deleted_at IS NULL
     `;
 
-    // Confirmação de leitura no WhatsApp (se configurado pela loja)
     if (naoLidas.length > 0) {
       const [loja] = await this.sql`SELECT confirmar_leitura_wa FROM lojas WHERE id = ${lojaId}`;
       if (loja?.confirmarLeituraWa) {
         const telefone: string = naoLidas[0].telefone;
         const messageIds: string[] = naoLidas.map((m: any) => m.whatsappMessageId).filter(Boolean);
-        await this.baileysService.marcarLidaNoWhatsApp(telefone, messageIds);
+        await this.baileysService.marcarLidaNoWhatsApp(telefone, messageIds, lojaId);
       }
     }
   }
 
-  // Soft-delete de todas as mensagens de uma conversa
   async excluirConversa(lojaId: string, clienteId: string) {
     await this.sql`
       UPDATE mensagens_whatsapp

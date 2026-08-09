@@ -42,9 +42,9 @@ export class LembretesProcessor {
 
     this.logger.log(`Processando lembrete ${lembreteId} para ${clienteNome}`);
 
-    // ---- Verifica se o WhatsApp está conectado ----
+    // ---- Verifica se o WhatsApp desta loja está conectado ----
     // Se desconectado, represa o lembrete (não retenta) para revisão manual.
-    if (!this.whatsappService.estaConectado()) {
+    if (!this.whatsappService.estaConectado(lojaId)) {
       await this.sql`
         UPDATE lembretes SET represado = TRUE, updated_at = NOW() WHERE id = ${lembreteId}
       `;

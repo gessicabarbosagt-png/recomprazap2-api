@@ -22,7 +22,6 @@ const {
   jidNormalizedUser,
 } = require('@whiskeysockets/baileys');
 
-// Tipos de mensagem sem conteúdo real — ignorados antes de salvar no banco
 const TIPOS_PROTOCOLO = new Set([
   'messageContextInfo',
   'protocolMessage',
@@ -43,96 +42,128 @@ const LOGGER_SILENCIOSO = {
   child: () => LOGGER_SILENCIOSO,
 };
 
-// Normaliza string para matching case-insensitive e sem acento
 export function normalizarTexto(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 }
 
 export type StatusConexao = 'desconectado' | 'aguardando' | 'conectado';
 
+// Estado isolado por loja — cada loja tem seu próprio socket Baileys
+interface LojaSession {
+  lojaId: string;
+  socket: any | null;
+  status: StatusConexao;
+  qrAtual: string | null;
+  reconectando: boolean;
+  diagLogs: string[];
+  msgsRecebidas: number;
+  msgsIgnoradas: number;
+  ultimaMsgEm: string | null;
+  lidToPhone: Map<string, string>;
+  pendingSendJids: Map<string, string>;
+}
+
 @Injectable()
 export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WhatsappBaileysService.name);
-  private socket: any = null;
-  private qrAtual: string | null = null;
-  private status: StatusConexao = 'desconectado';
-  private reconectando = false;
-  private readonly diagLogs: string[] = [];
-  private msgsRecebidas = 0;
-  private msgsIgnoradas = 0;
-  private ultimaMsgEm: string | null = null;
-  private readonly lidToPhone = new Map<string, string>();
-  private readonly pendingSendJids = new Map<string, string>();
-
-  private diag(msg: string) {
-    const entry = `${new Date().toISOString()} ${msg}`;
-    this.diagLogs.push(entry);
-    if (this.diagLogs.length > 300) this.diagLogs.shift();
-    this.logger.log(msg);
-  }
+  private readonly sessions = new Map<string, LojaSession>();
 
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
   ) {}
 
+  // Inicia sessões para todas as lojas ativas ao subir o serviço
   async onModuleInit() {
-    this.diag('[Baileys] onModuleInit — iniciando sessão…');
-    await this.iniciarSessao().catch((err) => {
-      this.diag(`[Baileys] FALHA CRÍTICA em onModuleInit: ${err?.message ?? err}`);
-    });
+    const lojas = await this.sql`SELECT id FROM lojas WHERE ativa = TRUE`;
+    for (const loja of lojas) {
+      await this.iniciarSessao(loja.id).catch((err) => {
+        this.logger.error(`[Baileys] FALHA ao iniciar sessão para loja ${loja.id}: ${err?.message ?? err}`);
+      });
+    }
   }
 
   async onModuleDestroy() {
-    this.reconectando = false;
-    this.socket?.end(undefined);
-  }
-
-  estaConectado(): boolean {
-    return this.status === 'conectado';
+    for (const session of this.sessions.values()) {
+      session.reconectando = false;
+      session.socket?.end(undefined);
+    }
   }
 
   // ----------------------------------------------------------------
-  // LID → telefone: resolução em camadas
+  // Gerenciamento de sessões
   // ----------------------------------------------------------------
 
-  private async resolverLid(lid: string): Promise<string | null> {
-    const cached = this.lidToPhone.get(lid);
+  private ensureSession(lojaId: string): LojaSession {
+    if (!this.sessions.has(lojaId)) {
+      this.sessions.set(lojaId, {
+        lojaId,
+        socket: null,
+        status: 'desconectado',
+        qrAtual: null,
+        reconectando: false,
+        diagLogs: [],
+        msgsRecebidas: 0,
+        msgsIgnoradas: 0,
+        ultimaMsgEm: null,
+        lidToPhone: new Map(),
+        pendingSendJids: new Map(),
+      });
+    }
+    return this.sessions.get(lojaId)!;
+  }
+
+  private diag(session: LojaSession, msg: string) {
+    const entry = `${new Date().toISOString()} ${msg}`;
+    session.diagLogs.push(entry);
+    if (session.diagLogs.length > 300) session.diagLogs.shift();
+    this.logger.log(msg);
+  }
+
+  // ----------------------------------------------------------------
+  // LID → telefone: resolução por sessão de loja
+  // ----------------------------------------------------------------
+
+  private async resolverLid(lid: string, session: LojaSession): Promise<string | null> {
+    const cached = session.lidToPhone.get(lid);
     if (cached) return cached;
 
-    if (this.socket?.signalRepository?.lidMapping) {
+    if (session.socket?.signalRepository?.lidMapping) {
       try {
-        const pnJid: string | null = await this.socket.signalRepository.lidMapping.getPNForLID(lid);
+        const pnJid: string | null = await session.socket.signalRepository.lidMapping.getPNForLID(lid);
         if (pnJid) {
           const normalizado: string = jidNormalizedUser(pnJid) ?? pnJid;
-          this.lidToPhone.set(lid, normalizado);
+          session.lidToPhone.set(lid, normalizado);
           return normalizado;
         }
       } catch (e: any) {
-        this.diag(`[Baileys] getPNForLID(${lid}) falhou: ${e?.message}`);
+        this.diag(session, `[Baileys] getPNForLID(${lid}) falhou: ${e?.message}`);
       }
     }
 
-    const [row] = await this.sql`SELECT phone_jid FROM whatsapp_lid_map WHERE lid = ${lid}`;
+    const [row] = await this.sql`
+      SELECT phone_jid FROM whatsapp_lid_map
+      WHERE lid = ${lid} AND loja_id = ${session.lojaId}
+    `;
     if (row?.phoneJid) {
-      this.lidToPhone.set(lid, row.phoneJid);
+      session.lidToPhone.set(lid, row.phoneJid);
       return row.phoneJid;
     }
 
     return null;
   }
 
-  private async salvarMapeamentoLid(lid: string, phoneJid: string, lojaId?: string | null): Promise<void> {
-    this.lidToPhone.set(lid, phoneJid);
+  private async salvarMapeamentoLid(lid: string, phoneJid: string, session: LojaSession): Promise<void> {
+    session.lidToPhone.set(lid, phoneJid);
 
-    if (this.socket?.signalRepository?.lidMapping) {
-      await this.socket.signalRepository.lidMapping
+    if (session.socket?.signalRepository?.lidMapping) {
+      await session.socket.signalRepository.lidMapping
         .storeLIDPNMappings([{ lid, pn: phoneJid }])
-        .catch((e: any) => this.diag(`[Baileys] storeLIDPNMappings falhou: ${e?.message}`));
+        .catch((e: any) => this.diag(session, `[Baileys] storeLIDPNMappings falhou: ${e?.message}`));
     }
 
     this.sql`
       INSERT INTO whatsapp_lid_map (lid, phone_jid, loja_id, updated_at)
-      VALUES (${lid}, ${phoneJid}, ${lojaId ?? null}, NOW())
+      VALUES (${lid}, ${phoneJid}, ${session.lojaId}, NOW())
       ON CONFLICT (lid) DO UPDATE
         SET phone_jid = EXCLUDED.phone_jid,
             loja_id   = COALESCE(EXCLUDED.loja_id, whatsapp_lid_map.loja_id),
@@ -144,50 +175,50 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   // Plano C: mensagens com LID não resolvido
   // ----------------------------------------------------------------
 
-  private async salvarMensagemPendente(lid: string, msg: any): Promise<void> {
+  private async salvarMensagemPendente(lid: string, msg: any, session: LojaSession): Promise<void> {
     const msgRaw = JSON.stringify(msg);
     await this.sql`
-      INSERT INTO whatsapp_mensagens_pendentes_lid (lid, msg_raw, recebido_em)
-      VALUES (${lid}, ${msgRaw}, NOW())
-    `.catch((e: any) => this.diag(`[Baileys] erro ao salvar msg pendente: ${e?.message}`));
+      INSERT INTO whatsapp_mensagens_pendentes_lid (lid, msg_raw, recebido_em, loja_id)
+      VALUES (${lid}, ${msgRaw}, NOW(), ${session.lojaId})
+    `.catch((e: any) => this.diag(session, `[Baileys] erro ao salvar msg pendente: ${e?.message}`));
 
-    this.diag(`[Baileys] LID ${lid} sem mapeamento — mensagem salva como pendente`);
+    this.diag(session, `[Baileys] LID ${lid} sem mapeamento — mensagem salva como pendente`);
 
     for (const [delayMs, tentativa] of [[5_000, 1], [30_000, 2], [120_000, 3]] as const) {
       setTimeout(async () => {
-        const resolvido = await this.resolverLid(lid).catch(() => null);
+        const resolvido = await this.resolverLid(lid, session).catch(() => null);
         if (resolvido) {
-          this.diag(`[Baileys] LID ${lid} resolvido na tentativa ${tentativa} → ${resolvido}`);
-          await this.processarPendentesDoLid(lid, resolvido).catch(() => {});
+          this.diag(session, `[Baileys] LID ${lid} resolvido na tentativa ${tentativa} → ${resolvido}`);
+          await this.processarPendentesDoLid(lid, resolvido, session).catch(() => {});
         } else {
-          this.diag(`[Baileys] LID ${lid} ainda sem mapeamento (tentativa ${tentativa})`);
+          this.diag(session, `[Baileys] LID ${lid} ainda sem mapeamento (tentativa ${tentativa})`);
         }
       }, delayMs);
     }
   }
 
-  private async processarPendentesDoLid(lid: string, phoneJid: string): Promise<void> {
+  private async processarPendentesDoLid(lid: string, phoneJid: string, session: LojaSession): Promise<void> {
     const pendentes = await this.sql`
       SELECT id, msg_raw
       FROM whatsapp_mensagens_pendentes_lid
-      WHERE lid = ${lid} AND resolvido_em IS NULL
+      WHERE lid = ${lid} AND loja_id = ${session.lojaId} AND resolvido_em IS NULL
       ORDER BY recebido_em
     `;
     if (pendentes.length === 0) return;
 
-    this.diag(`[Baileys] processando ${pendentes.length} mensagem(ns) pendente(s) de ${lid} → ${phoneJid}`);
+    this.diag(session, `[Baileys] processando ${pendentes.length} mensagem(ns) pendente(s) de ${lid} → ${phoneJid}`);
     for (const p of pendentes) {
       try {
         const msg = JSON.parse(p.msgRaw);
         msg.key.remoteJid = phoneJid;
-        await this.processarMensagemRecebida(msg);
+        await this.processarMensagemRecebida(msg, session);
         await this.sql`
           UPDATE whatsapp_mensagens_pendentes_lid
           SET resolvido_em = NOW(), tentativas = tentativas + 1
           WHERE id = ${p.id}
         `;
       } catch (e: any) {
-        this.diag(`[Baileys] erro ao processar pendente ${p.id}: ${e?.message}`);
+        this.diag(session, `[Baileys] erro ao processar pendente ${p.id}: ${e?.message}`);
         await this.sql`
           UPDATE whatsapp_mensagens_pendentes_lid SET tentativas = tentativas + 1 WHERE id = ${p.id}
         `.catch(() => {});
@@ -195,40 +226,43 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async tentarResolverPendentes(): Promise<void> {
+  private async tentarResolverPendentes(session: LojaSession): Promise<void> {
     const lids = await this.sql`
-      SELECT DISTINCT lid FROM whatsapp_mensagens_pendentes_lid WHERE resolvido_em IS NULL
+      SELECT DISTINCT lid FROM whatsapp_mensagens_pendentes_lid
+      WHERE resolvido_em IS NULL AND loja_id = ${session.lojaId}
     `;
     for (const { lid } of lids) {
-      const resolvido = await this.resolverLid(lid).catch(() => null);
+      const resolvido = await this.resolverLid(lid, session).catch(() => null);
       if (resolvido) {
-        await this.processarPendentesDoLid(lid, resolvido).catch(() => {});
+        await this.processarPendentesDoLid(lid, resolvido, session).catch(() => {});
       }
     }
   }
 
   // ----------------------------------------------------------------
-  // Conexão Baileys
+  // Conexão Baileys — uma sessão por loja
   // ----------------------------------------------------------------
 
-  private async iniciarSessao() {
-    this.reconectando = false;
+  private async iniciarSessao(lojaId: string) {
+    const session = this.ensureSession(lojaId);
+    session.reconectando = false;
+
     try {
-      this.diag('[Baileys] carregando auth state do PostgreSQL…');
-      const { state, saveCreds } = await useDatabaseAuthState(this.sql);
-      this.diag('[Baileys] auth state carregado');
+      this.diag(session, `[Baileys] carregando auth state para loja ${lojaId}…`);
+      const { state, saveCreds } = await useDatabaseAuthState(this.sql, lojaId);
+      this.diag(session, '[Baileys] auth state carregado');
 
       let version: number[];
       try {
         const result = await fetchLatestBaileysVersion();
         version = result.version;
-        this.diag(`[Baileys] versão obtida: ${version.join('.')}`);
+        this.diag(session, `[Baileys] versão obtida: ${version.join('.')}`);
       } catch (versionErr: any) {
         version = [2, 3000, 1023026504];
-        this.diag(`[Baileys] fetchLatestBaileysVersion falhou (${versionErr?.message}) — fallback ${version.join('.')}`);
+        this.diag(session, `[Baileys] fetchLatestBaileysVersion falhou (${versionErr?.message}) — fallback ${version.join('.')}`);
       }
 
-      this.socket = makeWASocket({
+      session.socket = makeWASocket({
         version,
         auth: state,
         browser: Browsers.macOS('Chrome'),
@@ -236,116 +270,114 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         logger: LOGGER_SILENCIOSO,
         connectTimeoutMs: 60_000,
       });
-      console.log('[SOCKET CREATED]', new Date().toISOString(), 'user:', this.socket.user?.id);
-      this.diag('[Baileys] socket criado — aguardando eventos de conexão');
+      console.log('[SOCKET CREATED]', new Date().toISOString(), `loja=${lojaId}`, 'user:', session.socket.user?.id);
+      this.diag(session, '[Baileys] socket criado — aguardando eventos de conexão');
 
-      this.socket.ev.on('creds.update', saveCreds);
+      session.socket.ev.on('creds.update', saveCreds);
 
-      const lidRows = await this.sql`SELECT lid, phone_jid FROM whatsapp_lid_map`;
+      // Carrega mapeamentos LID desta loja
+      const lidRows = await this.sql`SELECT lid, phone_jid FROM whatsapp_lid_map WHERE loja_id = ${lojaId}`;
       for (const r of lidRows) {
-        this.lidToPhone.set(r.lid, r.phoneJid);
+        session.lidToPhone.set(r.lid, r.phoneJid);
       }
-      if (lidRows.length > 0 && this.socket?.signalRepository?.lidMapping) {
-        await this.socket.signalRepository.lidMapping
+      if (lidRows.length > 0 && session.socket?.signalRepository?.lidMapping) {
+        await session.socket.signalRepository.lidMapping
           .storeLIDPNMappings(lidRows.map((r: any) => ({ lid: r.lid, pn: r.phoneJid })))
           .catch(() => {});
       }
-      this.diag(`[Baileys] LID map carregado do banco: ${lidRows.length} entradas`);
+      this.diag(session, `[Baileys] LID map carregado: ${lidRows.length} entradas`);
 
       const salvarLids = async (contacts: any[]) => {
         let novos = 0;
         for (const c of contacts) {
           if (c.lid && c.id) {
-            await this.salvarMapeamentoLid(c.lid, c.id).catch(() => {});
+            await this.salvarMapeamentoLid(c.lid, c.id, session).catch(() => {});
             novos++;
           }
         }
         if (novos > 0 || contacts.length > 5) {
           const semLid = contacts.filter((c: any) => c.id && !c.lid).length;
-          this.diag(`[Baileys] contacts sync: ${contacts.length} total, ${novos} com LID, ${semLid} sem LID`);
+          this.diag(session, `[Baileys] contacts sync: ${contacts.length} total, ${novos} com LID, ${semLid} sem LID`);
         }
       };
-      this.socket.ev.on('contacts.upsert', salvarLids);
-      this.socket.ev.on('contacts.update', salvarLids);
+      session.socket.ev.on('contacts.upsert', salvarLids);
+      session.socket.ev.on('contacts.update', salvarLids);
 
-      console.log('[REGISTERING LISTENER]', 'connection.update', new Date().toISOString());
-      this.socket.ev.on('connection.update', async (update: any) => {
+      session.socket.ev.on('connection.update', async (update: any) => {
         const { connection, lastDisconnect, qr } = update;
-        this.diag(`[Baileys] connection.update: connection=${connection ?? 'n/a'} qr=${qr ? 'SIM' : 'não'}`);
+        this.diag(session, `[Baileys] connection.update: connection=${connection ?? 'n/a'} qr=${qr ? 'SIM' : 'não'}`);
 
         if (qr) {
-          this.qrAtual = qr;
-          this.status = 'aguardando';
-          this.diag('[Baileys] QR Code gerado — aguardando escaneamento');
+          session.qrAtual = qr;
+          session.status = 'aguardando';
+          this.diag(session, '[Baileys] QR Code gerado — aguardando escaneamento');
         }
 
         if (connection === 'open') {
-          this.status = 'conectado';
-          this.qrAtual = null;
-          this.reconectando = false;
-          this.diag('[Baileys] ✅ WhatsApp conectado');
-          this.sql`UPDATE lojas SET wa_status = 'conectado', wa_atualizado_em = NOW() WHERE deleted_at IS NULL`.catch(() => {});
-          this.tentarResolverPendentes().catch(() => {});
+          session.status = 'conectado';
+          session.qrAtual = null;
+          session.reconectando = false;
+          this.diag(session, '[Baileys] ✅ WhatsApp conectado');
+          this.sql`UPDATE lojas SET wa_status = 'conectado', wa_atualizado_em = NOW() WHERE id = ${lojaId}`.catch(() => {});
+          this.tentarResolverPendentes(session).catch(() => {});
         }
 
         if (connection === 'close') {
-          this.status = 'desconectado';
-          this.qrAtual = null;
-          this.sql`UPDATE lojas SET wa_status = 'desconectado', wa_atualizado_em = NOW() WHERE deleted_at IS NULL`.catch(() => {});
+          session.status = 'desconectado';
+          session.qrAtual = null;
+          this.sql`UPDATE lojas SET wa_status = 'desconectado', wa_atualizado_em = NOW() WHERE id = ${lojaId}`.catch(() => {});
 
           const statusCode = lastDisconnect?.error?.output?.statusCode;
           const errorMsg = lastDisconnect?.error?.message ?? '';
           const deslogado = statusCode === DisconnectReason.loggedOut;
 
-          this.diag(`[Baileys] conexão fechada — statusCode=${statusCode} deslogado=${deslogado} erro="${errorMsg}"`);
+          this.diag(session, `[Baileys] conexão fechada — statusCode=${statusCode} deslogado=${deslogado} erro="${errorMsg}"`);
 
           if (deslogado) {
-            this.reconectando = false;
-            await this.sql`DELETE FROM baileys_auth_state`.catch((e: any) =>
-              this.diag(`[Baileys] erro ao limpar auth state: ${e?.message}`),
+            session.reconectando = false;
+            await this.sql`DELETE FROM baileys_auth_state WHERE id LIKE ${lojaId + ':%'}`.catch((e: any) =>
+              this.diag(session, `[Baileys] erro ao limpar auth state: ${e?.message}`),
             );
-            setTimeout(() => this.iniciarSessao(), 3_000);
-          } else if (!this.reconectando) {
-            this.reconectando = true;
-            this.diag('[Baileys] reconectando em 5s…');
-            setTimeout(() => this.iniciarSessao(), 5_000);
+            setTimeout(() => this.iniciarSessao(lojaId), 3_000);
+          } else if (!session.reconectando) {
+            session.reconectando = true;
+            this.diag(session, '[Baileys] reconectando em 5s…');
+            setTimeout(() => this.iniciarSessao(lojaId), 5_000);
           }
         }
       });
 
-      console.log('[REGISTERING LISTENER]', 'messages.upsert', new Date().toISOString());
-      this.socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
+      session.socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
         for (const m of (messages ?? [])) {
-          console.log(`[RAW UPSERT] type=${type} remoteJid=${m.key?.remoteJid} fromMe=${m.key?.fromMe} hasMessage=${!!m.message} messageStubType=${m.messageStubType ?? 'none'}`);
+          console.log(`[RAW UPSERT loja=${lojaId.slice(0,8)}] type=${type} remoteJid=${m.key?.remoteJid} fromMe=${m.key?.fromMe} hasMessage=${!!m.message} messageStubType=${m.messageStubType ?? 'none'}`);
         }
-        this.diag(`[Baileys] messages.upsert: type=${type} count=${messages?.length ?? 0}`);
+        this.diag(session, `[Baileys] messages.upsert: type=${type} count=${messages?.length ?? 0}`);
 
+        // Captura LID em ecos de envio
         for (const m of (messages ?? [])) {
           if (m.key?.fromMe && m.key?.remoteJid?.endsWith('@lid')) {
             const lid: string = m.key.remoteJid;
             const mid: string = m.key?.id ?? '';
-            const phoneJid = mid ? this.pendingSendJids.get(mid) : undefined;
-            if (phoneJid && !this.lidToPhone.has(lid)) {
-              await this.salvarMapeamentoLid(lid, phoneJid);
-              this.diag(`[Baileys] LID ${lid} → ${phoneJid} via eco (type=${type})`);
+            const phoneJid = mid ? session.pendingSendJids.get(mid) : undefined;
+            if (phoneJid && !session.lidToPhone.has(lid)) {
+              await this.salvarMapeamentoLid(lid, phoneJid, session);
+              this.diag(session, `[Baileys] LID ${lid} → ${phoneJid} via eco (type=${type})`);
             }
           }
         }
 
-        // Mensagens enviadas pelo celular chegam como type='append' (não 'notify').
-        // Processar antes do early return para que inbox e gatilhos funcionem.
+        // Mensagens enviadas pelo celular chegam como type='append'
         if (type !== 'notify') {
           for (const m of (messages ?? [])) {
             const jid: string = m.key?.remoteJid ?? '';
-            // Só mensagens fromMe para chats individuais (@s.whatsapp.net) — ignora grupos
             if (m.key?.fromMe && m.message && jid.endsWith('@s.whatsapp.net')) {
-              this.diag(`[Baileys] eco celular (${type}) jid=${jid} — processando`);
-              await this.processarMensagemEnviadaCelular(m).catch((err: any) =>
-                this.diag(`[Baileys] erro ao processar eco celular: ${err?.message}`),
+              this.diag(session, `[Baileys] eco celular (${type}) jid=${jid} — processando`);
+              await this.processarMensagemEnviadaCelular(m, session).catch((err: any) =>
+                this.diag(session, `[Baileys] erro ao processar eco celular: ${err?.message}`),
               );
             }
           }
-          this.msgsIgnoradas++;
+          session.msgsIgnoradas++;
           return;
         }
 
@@ -353,65 +385,65 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           const jid = msg.key?.remoteJid ?? '';
           const fromMe = msg.key?.fromMe ?? false;
           const hasMsg = !!msg.message;
-          this.diag(`[Baileys] msg: jid=${jid} fromMe=${fromMe} hasMsg=${hasMsg}`);
+          this.diag(session, `[Baileys] msg: jid=${jid} fromMe=${fromMe} hasMsg=${hasMsg}`);
 
           if (fromMe) {
             if (jid.endsWith('@lid')) {
               const msgId: string = msg.key?.id ?? '';
-              const phoneJid = msgId ? this.pendingSendJids.get(msgId) : undefined;
-              if (phoneJid && !this.lidToPhone.has(jid)) {
-                await this.salvarMapeamentoLid(jid, phoneJid);
-                this.diag(`[Baileys] LID ${jid} → ${phoneJid} via eco de envio (msgId=${msgId})`);
+              const phoneJid = msgId ? session.pendingSendJids.get(msgId) : undefined;
+              if (phoneJid && !session.lidToPhone.has(jid)) {
+                await this.salvarMapeamentoLid(jid, phoneJid, session);
+                this.diag(session, `[Baileys] LID ${jid} → ${phoneJid} via eco de envio (msgId=${msgId})`);
               }
             }
-            // Captura mensagens enviadas pelo celular; ON CONFLICT descarta ecos do sistema
             if (hasMsg) {
-              await this.processarMensagemEnviadaCelular(msg).catch((err: any) =>
-                this.diag(`[Baileys] erro ao processar msg celular: ${err?.message}`),
+              await this.processarMensagemEnviadaCelular(msg, session).catch((err: any) =>
+                this.diag(session, `[Baileys] erro ao processar msg celular: ${err?.message}`),
               );
             }
-            this.msgsIgnoradas++;
+            session.msgsIgnoradas++;
             continue;
           }
 
           if (!hasMsg) {
-            this.msgsIgnoradas++;
+            session.msgsIgnoradas++;
             continue;
           }
 
-          await this.processarMensagemRecebida(msg).catch((err: any) =>
-            this.diag(`[Baileys] erro ao processar mensagem: ${err?.message}`),
+          await this.processarMensagemRecebida(msg, session).catch((err: any) =>
+            this.diag(session, `[Baileys] erro ao processar mensagem: ${err?.message}`),
           );
         }
       });
 
     } catch (err: any) {
-      this.diag(`[Baileys] ERRO em iniciarSessao: ${err?.message ?? err}`);
+      this.diag(this.ensureSession(lojaId), `[Baileys] ERRO em iniciarSessao: ${err?.message ?? err}`);
       throw err;
     }
   }
 
   // ----------------------------------------------------------------
-  // Motor de mensagens recebidas
+  // Motor de mensagens recebidas (por loja via closure da sessão)
   // ----------------------------------------------------------------
 
-  private async processarMensagemRecebida(msg: any) {
+  private async processarMensagemRecebida(msg: any, session: LojaSession) {
+    const lojaId = session.lojaId;
     let jid: string = msg.key.remoteJid ?? '';
 
     if (jid.endsWith('@lid')) {
-      const resolvido = await this.resolverLid(jid);
+      const resolvido = await this.resolverLid(jid, session);
       if (resolvido) {
-        this.diag(`[Baileys] LID ${jid} resolvido → ${resolvido}`);
+        this.diag(session, `[Baileys] LID ${jid} resolvido → ${resolvido}`);
         jid = resolvido;
       } else {
-        await this.salvarMensagemPendente(jid, msg);
+        await this.salvarMensagemPendente(jid, msg, session);
         return;
       }
     }
 
     if (!jid.endsWith('@s.whatsapp.net')) {
-      this.diag(`[Baileys] msg ignorada (grupo/status): jid=${jid}`);
-      this.msgsIgnoradas++;
+      this.diag(session, `[Baileys] msg ignorada (grupo/status): jid=${jid}`);
+      session.msgsIgnoradas++;
       return;
     }
 
@@ -429,14 +461,12 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const whatsappMsgId: string = msg.key.id ?? '';
     const pushName: string | null = msg.pushName ?? null;
 
-    // Mensagens de protocolo WhatsApp (sem conteúdo real) — ignorar completamente
     if (!texto && TIPOS_PROTOCOLO.has(tipoMsg)) {
-      this.diag(`[Baileys] msg protocolo ignorada (${tipoMsg}) de ${telefone}`);
-      this.msgsIgnoradas++;
+      this.diag(session, `[Baileys] msg protocolo ignorada (${tipoMsg}) de ${telefone}`);
+      session.msgsIgnoradas++;
       return;
     }
 
-    // Extrai contextInfo de todos os tipos de msg — necessário para detectar CTWA (Meta Ads)
     const contextInfo =
       msg.message?.extendedTextMessage?.contextInfo ??
       msg.message?.imageMessage?.contextInfo ??
@@ -444,45 +474,42 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       msg.message?.documentMessage?.contextInfo ??
       null;
 
-    this.diag(`[Baileys] processando msg de ${telefone} tipo=${tipoMsg} texto="${texto.slice(0, 60)}"`);
-    this.msgsRecebidas++;
-    this.ultimaMsgEm = new Date().toISOString();
+    this.diag(session, `[Baileys] processando msg de ${telefone} tipo=${tipoMsg} texto="${texto.slice(0, 60)}"`);
+    session.msgsRecebidas++;
+    session.ultimaMsgEm = new Date().toISOString();
 
-    // Busca cliente ativo
+    // Busca cliente ativo nesta loja
     let [cliente] = await this.sql`
       SELECT id, loja_id, nome FROM clientes
-      WHERE telefone = ${telefone} AND deleted_at IS NULL
+      WHERE telefone = ${telefone} AND loja_id = ${lojaId} AND deleted_at IS NULL
       LIMIT 1
     `;
 
     let textoExibido = texto;
 
-    // Se não existe cliente ativo, verifica se há um soft-deletado com esse número
     if (!cliente) {
       const [deletado] = await this.sql`
         SELECT id, loja_id, nome FROM clientes
-        WHERE telefone = ${telefone} AND deleted_at IS NOT NULL
+        WHERE telefone = ${telefone} AND loja_id = ${lojaId} AND deleted_at IS NOT NULL
         LIMIT 1
       `;
       if (deletado) {
-        // Reativa: nova mensagem = retorno do contato; preserva histórico e evita violação de unique
         await this.sql`
           UPDATE clientes
           SET deleted_at = NULL, ativo = true, updated_at = NOW()
           WHERE id = ${deletado.id}
         `;
         cliente = { id: deletado.id, lojaId: deletado.lojaId, nome: deletado.nome };
-        this.diag(`[Baileys] cliente ${telefone} reativado após soft-delete (id=${deletado.id})`);
+        this.diag(session, `[Baileys] cliente ${telefone} reativado após soft-delete (id=${deletado.id})`);
       }
     }
 
     if (cliente) {
-      this.diag(`[Baileys] cliente ${telefone} já existe (id=${cliente.id}) — captura de origem ignorada`);
+      this.diag(session, `[Baileys] cliente ${telefone} já existe (id=${cliente.id}) — captura de origem ignorada`);
     }
 
-    // Auto-cria cliente novo com captura de origem (só se não existe nenhum registro, nem deletado)
+    // Auto-cria cliente novo — pertence à loja deste socket
     if (!cliente) {
-      // Loga o contextInfo completo para descobrir campos reais do CTWA
       if (contextInfo) {
         this.logger.log(`[CTWA] contextInfo de ${telefone}: ${JSON.stringify(contextInfo, null, 2)}`);
       }
@@ -490,103 +517,64 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       const externalAdReply = contextInfo?.externalAdReply;
       let origemLead: string | null = null;
       let origemDetalhe: any = null;
-      let lojaIdNovo: string | null = null;
 
       if (externalAdReply) {
-        // Click-to-WhatsApp via Meta Ads
         origemLead = 'meta_ads';
         origemDetalhe = {
-          sourceUrl:              externalAdReply.sourceUrl ?? null,
-          title:                  externalAdReply.title ?? null,
-          body:                   externalAdReply.body ?? null,
-          sourceId:               externalAdReply.sourceId ?? null,
-          sourceType:             externalAdReply.sourceType ?? null,
-          mediaType:              externalAdReply.mediaType ?? null,
-          renderLargerThumbnail:  externalAdReply.renderLargerThumbnail ?? null,
+          sourceUrl:             externalAdReply.sourceUrl ?? null,
+          title:                 externalAdReply.title ?? null,
+          body:                  externalAdReply.body ?? null,
+          sourceId:              externalAdReply.sourceId ?? null,
+          sourceType:            externalAdReply.sourceType ?? null,
+          mediaType:             externalAdReply.mediaType ?? null,
+          renderLargerThumbnail: externalAdReply.renderLargerThumbnail ?? null,
         };
-        this.diag(`[Baileys] CTWA detectado para ${telefone}: sourceUrl=${origemDetalhe.sourceUrl} title="${origemDetalhe.title}"`);
+        this.diag(session, `[Baileys] CTWA detectado para ${telefone}: sourceUrl=${origemDetalhe.sourceUrl} title="${origemDetalhe.title}"`);
       }
 
-      // Verifica códigos de rastreio em TODAS as lojas ativas — a loja dona do código
-      // é a loja correta para o novo cliente (tracking code #codigo → loja explícita)
-      if (!lojaIdNovo && texto) {
-        const todosOsCodigos = await this.sql`
-          SELECT co.codigo, co.rotulo, co.loja_id
-          FROM codigos_origem co
-          JOIN lojas l ON l.id = co.loja_id
-          WHERE l.ativa = TRUE
+      // Tracking codes são buscados apenas desta loja (socket determina a loja)
+      if (!origemLead && texto) {
+        const codigos = await this.sql`
+          SELECT codigo, rotulo FROM codigos_origem WHERE loja_id = ${lojaId}
         `;
-        for (const { codigo, rotulo, lojaId: codLojaId } of todosOsCodigos) {
+        for (const { codigo, rotulo } of codigos) {
           const padraoComHash = `#${codigo}`.toLowerCase();
           if (texto.toLowerCase().includes(padraoComHash)) {
-            lojaIdNovo = codLojaId;
-            origemLead = origemLead ?? rotulo;
-            origemDetalhe = origemDetalhe ?? { codigo };
+            origemLead = rotulo;
+            origemDetalhe = { codigo };
             const regex = new RegExp(`#${codigo}`, 'gi');
             textoExibido = texto.replace(regex, '').trim();
-            this.diag(`[Baileys] ORIGEM DETECTADA: código #${codigo} → "${rotulo}" loja=${lojaIdNovo} para ${telefone}`);
+            this.diag(session, `[Baileys] ORIGEM DETECTADA: código #${codigo} → "${rotulo}" para ${telefone}`);
             break;
           }
         }
-        if (!lojaIdNovo) {
-          this.diag(`[Baileys] NOVO CLIENTE ${telefone} — primeira mensagem sem código de origem: "${texto.slice(0, 80)}"`);
+        if (!origemLead) {
+          this.diag(session, `[Baileys] NOVO CLIENTE ${telefone} — primeira mensagem sem código de origem: "${texto.slice(0, 80)}"`);
         }
-      } else if (!lojaIdNovo && !texto) {
-        this.diag(`[Baileys] NOVO CLIENTE ${telefone} — primeira mensagem sem texto (tipo=${Object.keys(contextInfo ?? {}).join(',')})`);
+      } else if (!origemLead && !texto) {
+        this.diag(session, `[Baileys] NOVO CLIENTE ${telefone} — primeira mensagem sem texto (tipo=${Object.keys(contextInfo ?? {}).join(',')})`);
       }
 
-      // Fallback explícito: loja principal (mais antiga ativa).
-      // Em setup multi-loja, configure tracking codes (#codigo) para atribuição explícita.
-      if (!lojaIdNovo) {
-        const [lojaPrincipal] = await this.sql`
-          SELECT id FROM lojas WHERE ativa = TRUE ORDER BY created_at ASC LIMIT 1
-        `;
-        if (lojaPrincipal) {
-          lojaIdNovo = lojaPrincipal.id;
-          this.logger.warn(
-            `[MULTI-LOJA] novo cliente ${telefone} sem código de origem — atribuído à loja principal ${lojaIdNovo}`,
-          );
-        }
-      }
-
-      if (lojaIdNovo) {
-        const nomeInicial = pushName || telefone;
-        const [novoCliente] = await this.sql`
-          INSERT INTO clientes
-            (loja_id, nome, telefone, consentimento_whatsapp, origem_lead, origem_detalhe, whatsapp_nome)
-          VALUES (
-            ${lojaIdNovo},
-            ${nomeInicial},
-            ${telefone},
-            false,
-            ${origemLead},
-            ${origemDetalhe ?? null},
-            ${pushName}
-          )
-          RETURNING id, loja_id, nome
-        `;
-        cliente = novoCliente;
-        this.diag(`[Baileys] cliente auto-criado: ${telefone} nome="${nomeInicial}" (loja=${lojaIdNovo} origem=${origemLead ?? 'desconhecida'})`);
-      }
+      const nomeInicial = pushName || telefone;
+      const [novoCliente] = await this.sql`
+        INSERT INTO clientes
+          (loja_id, nome, telefone, consentimento_whatsapp, origem_lead, origem_detalhe, whatsapp_nome)
+        VALUES (
+          ${lojaId},
+          ${nomeInicial},
+          ${telefone},
+          false,
+          ${origemLead},
+          ${origemDetalhe ? JSON.stringify(origemDetalhe) : null},
+          ${pushName ?? null}
+        )
+        ON CONFLICT (loja_id, telefone) DO NOTHING
+        RETURNING id, loja_id, nome
+      `;
+      cliente = novoCliente;
+      this.diag(session, `[Baileys] cliente auto-criado: ${telefone} nome="${nomeInicial}" (loja=${lojaId} origem=${origemLead ?? 'desconhecida'})`);
     }
 
-    // Atualiza whatsapp_nome sempre que pushName chegar; se nome ainda é o telefone, promove para o pushName
-    if (cliente && pushName) {
-      const nomeEhTelefone = cliente.nome === telefone;
-      if (nomeEhTelefone) {
-        await this.sql`
-          UPDATE clientes SET nome = ${pushName}, whatsapp_nome = ${pushName}, updated_at = NOW()
-          WHERE id = ${cliente.id}
-        `.catch(() => {});
-      } else {
-        await this.sql`
-          UPDATE clientes SET whatsapp_nome = ${pushName}, updated_at = NOW()
-          WHERE id = ${cliente.id}
-        `.catch(() => {});
-      }
-    }
-
-    // lojaId vem do cliente existente (derivado do número) — única fonte possível para msgs recebidas
     if (cliente) {
       await this.registrarMensagem({
         telefone,
@@ -598,18 +586,23 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (cliente) {
-      await this.processarComFluxo(cliente.id, cliente.lojaId, textoExibido || texto, telefone);
+      await this.processarComFluxo(cliente.id, cliente.lojaId, textoExibido || texto, telefone, session);
     } else if (/^[123]$/.test(texto.trim())) {
-      await this.processarRespostaPorTelefone(texto.trim(), telefone);
+      await this.processarRespostaPorTelefone(texto.trim(), telefone, lojaId);
     }
   }
 
-  /**
-   * Motor de fluxo configurável.
-   * Sessão ativa + fluxo ativo → engine de opcoes.
-   * Caso contrário → comportamento hardcoded (busca último lembrete enviado).
-   */
-  private async processarComFluxo(clienteId: string, lojaId: string, texto: string, telefone: string) {
+  // ----------------------------------------------------------------
+  // Motor de fluxo configurável
+  // ----------------------------------------------------------------
+
+  private async processarComFluxo(
+    clienteId: string,
+    lojaId: string,
+    texto: string,
+    telefone: string,
+    session: LojaSession,
+  ) {
     const [sessao] = await this.sql`
       SELECT id, lembrete_id, fallbacks
       FROM sessao_conversa
@@ -625,24 +618,22 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       LIMIT 1
     `;
 
-    this.diag(`[FLUXO] cliente=${clienteId} loja=${lojaId} sessao=${sessao?.id ?? 'NENHUMA'} lembreteId=${sessao?.lembreteId ?? 'null'} fluxo=${fluxo ? 'SIM' : 'NENHUM'} texto="${texto.slice(0, 40)}"`);
+    this.diag(session, `[FLUXO] cliente=${clienteId} loja=${lojaId} sessao=${sessao?.id ?? 'NENHUMA'} lembreteId=${sessao?.lembreteId ?? 'null'} fluxo=${fluxo ? 'SIM' : 'NENHUM'} texto="${texto.slice(0, 40)}"`);
 
-    // Sem sessão ou sem fluxo ativo → comportamento legado
     if (!sessao || !fluxo) {
-      this.diag(`[FLUXO] ${!sessao ? 'sem sessão ativa' : 'sem fluxo ativo'} → fallback legado para ${telefone}`);
+      this.diag(session, `[FLUXO] ${!sessao ? 'sem sessão ativa' : 'sem fluxo ativo'} → fallback legado para ${telefone}`);
       if (/^[123]$/.test(texto.trim())) {
-        await this.processarRespostaPorTelefone(texto.trim(), telefone);
+        await this.processarRespostaPorTelefone(texto.trim(), telefone, lojaId);
       }
       return;
     }
 
     const gatilho = normalizarResposta(texto);
 
-    // Parse defensivo: opcoes pode vir como string se coluna era TEXT antes da migration
     const opcoesRaw = fluxo.opcoes ?? [];
     const opcoes = (typeof opcoesRaw === 'string' ? JSON.parse(opcoesRaw) : opcoesRaw) as OpcaoFluxo[];
 
-    this.diag(`[FLUXO] gatilho="${gatilho}" opcoes=${opcoes.length} gatilhos=[${opcoes.map((o) => o.gatilho).join(',')}]`);
+    this.diag(session, `[FLUXO] gatilho="${gatilho}" opcoes=${opcoes.length} gatilhos=[${opcoes.map((o) => o.gatilho).join(',')}]`);
 
     const opcaoMatch = gatilho ? opcoes.find((o) => o.gatilho === gatilho) : null;
 
@@ -651,38 +642,36 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       await this.sql`
         UPDATE sessao_conversa SET fallbacks = ${novosFallbacks}, updated_at = NOW() WHERE id = ${sessao.id}
       `;
-      this.diag(`[FLUXO] sem match para gatilho="${gatilho}" — fallback ${novosFallbacks}/2 para ${telefone}`);
+      this.diag(session, `[FLUXO] sem match para gatilho="${gatilho}" — fallback ${novosFallbacks}/2 para ${telefone}`);
       if (novosFallbacks <= 2) {
         const fallbackMsg = fluxo.mensagemFallback ?? fluxo.mensagem_fallback;
         const fallbackMsgId = await this.enviarMensagem(telefone, fallbackMsg, lojaId);
-        // Salva no banco imediatamente — eco de envio chega como type='append' e não é processado
         await this.registrarMensagem({ telefone, lojaId, direcao: 'enviada', conteudo: fallbackMsg, whatsappMsgId: fallbackMsgId || null, origem: 'sistema' });
-        this.diag(`[FLUXO] mensagem fallback enviada para ${telefone}`);
+        this.diag(session, `[FLUXO] mensagem fallback enviada para ${telefone}`);
       } else {
-        this.diag(`[FLUXO] ${novosFallbacks} fallbacks para ${telefone} — parando respostas automáticas`);
+        this.diag(session, `[FLUXO] ${novosFallbacks} fallbacks para ${telefone} — parando respostas automáticas`);
       }
       return;
     }
 
-    this.diag(`[FLUXO] MATCH gatilho="${gatilho}" acao="${opcaoMatch.acao}" para ${telefone}`);
+    this.diag(session, `[FLUXO] MATCH gatilho="${gatilho}" acao="${opcaoMatch.acao}" para ${telefone}`);
 
-    // Match encontrado! Salva no banco imediatamente — eco de envio chega como type='append' e não é processado
     const respostaMsgId = await this.enviarMensagem(telefone, opcaoMatch.mensagem_resposta, lojaId);
     await this.registrarMensagem({ telefone, lojaId, direcao: 'enviada', conteudo: opcaoMatch.mensagem_resposta, whatsappMsgId: respostaMsgId || null, origem: 'sistema' });
-    this.diag(`[FLUXO] mensagem resposta enviada para ${telefone}: "${opcaoMatch.mensagem_resposta.slice(0, 60)}"`);
+    this.diag(session, `[FLUXO] mensagem resposta enviada para ${telefone}: "${opcaoMatch.mensagem_resposta.slice(0, 60)}"`);
 
     if (opcaoMatch.acao !== 'nenhuma' && sessao.lembreteId) {
-      this.diag(`[FLUXO] executando acao="${opcaoMatch.acao}" lembreteId=${sessao.lembreteId}`);
+      this.diag(session, `[FLUXO] executando acao="${opcaoMatch.acao}" lembreteId=${sessao.lembreteId}`);
       await this.executarAcaoFluxo(opcaoMatch.acao, sessao.lembreteId, opcaoMatch.acao_params).catch((e: any) =>
-        this.diag(`[FLUXO] executarAcaoFluxo FALHOU: ${e?.message}`),
+        this.diag(session, `[FLUXO] executarAcaoFluxo FALHOU: ${e?.message}`),
       );
-      this.diag(`[FLUXO] acao="${opcaoMatch.acao}" concluída para lembreteId=${sessao.lembreteId}`);
+      this.diag(session, `[FLUXO] acao="${opcaoMatch.acao}" concluída para lembreteId=${sessao.lembreteId}`);
     } else if (opcaoMatch.acao !== 'nenhuma' && !sessao.lembreteId) {
-      this.diag(`[FLUXO] acao="${opcaoMatch.acao}" PULADA — sessão sem lembrete_id (modo teste?)`);
+      this.diag(session, `[FLUXO] acao="${opcaoMatch.acao}" PULADA — sessão sem lembrete_id (modo teste?)`);
     }
 
     await this.sql`UPDATE sessao_conversa SET expira_em = NOW(), updated_at = NOW() WHERE id = ${sessao.id}`;
-    this.diag(`[FLUXO] sessão ${sessao.id} encerrada após resposta "${gatilho}"`);
+    this.diag(session, `[FLUXO] sessão ${sessao.id} encerrada após resposta "${gatilho}"`);
   }
 
   private async executarAcaoFluxo(acao: string, lembreteId: string, acoParams?: any): Promise<void> {
@@ -735,16 +724,17 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async processarRespostaPorTelefone(opcao: string, telefone: string) {
+  private async processarRespostaPorTelefone(opcao: string, telefone: string, lojaId: string) {
     const acaoMap: Record<string, string> = { '1': 'pedir', '2': 'depois', '3': 'sair' };
     const acao = acaoMap[opcao];
     if (!acao) return;
 
     const [cliente] = await this.sql`
-      SELECT id, nome FROM clientes WHERE telefone = ${telefone} AND deleted_at IS NULL LIMIT 1
+      SELECT id, nome FROM clientes
+      WHERE telefone = ${telefone} AND loja_id = ${lojaId} AND deleted_at IS NULL LIMIT 1
     `;
     if (!cliente) {
-      this.diag(`[LEGADO] processarRespostaPorTelefone: cliente não encontrado para ${telefone}`);
+      this.logger.log(`[LEGADO] processarRespostaPorTelefone: cliente não encontrado para ${telefone} loja=${lojaId}`);
       return;
     }
 
@@ -755,11 +745,11 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       ORDER BY l.enviado_em DESC LIMIT 1
     `;
     if (!lembrete) {
-      this.diag(`[LEGADO] processarRespostaPorTelefone: nenhum lembrete 'enviado' para clienteId=${cliente.id} — ação ignorada`);
+      this.logger.log(`[LEGADO] processarRespostaPorTelefone: nenhum lembrete 'enviado' para clienteId=${cliente.id} — ação ignorada`);
       return;
     }
 
-    this.diag(`[LEGADO] processarRespostaPorTelefone: opcao="${opcao}" acao="${acao}" lembreteId=${lembrete.id} cliente=${cliente.id}`);
+    this.logger.log(`[LEGADO] processarRespostaPorTelefone: opcao="${opcao}" acao="${acao}" lembreteId=${lembrete.id} cliente=${cliente.id}`);
     await this.processarResposta(acao, lembrete.id, telefone);
   }
 
@@ -811,18 +801,18 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // Captura mensagens enviadas pelo próprio lojista via celular.
-  // ON CONFLICT descarta silenciosamente ecos de mensagens já salvas pelo sistema.
-  private async processarMensagemEnviadaCelular(msg: any): Promise<void> {
+  // Captura mensagens enviadas pelo lojista via celular
+  private async processarMensagemEnviadaCelular(msg: any, session: LojaSession): Promise<void> {
+    const lojaId = session.lojaId;
     const whatsappMsgId: string = msg.key?.id ?? '';
     if (!whatsappMsgId) return;
 
     let jid: string = msg.key.remoteJid ?? '';
 
     if (jid.endsWith('@lid')) {
-      const resolvido = await this.resolverLid(jid).catch(() => null);
+      const resolvido = await this.resolverLid(jid, session).catch(() => null);
       if (!resolvido) {
-        this.diag(`[Baileys] celular: LID ${jid} não resolvido — ignorando`);
+        this.diag(session, `[Baileys] celular: LID ${jid} não resolvido — ignorando`);
         return;
       }
       jid = resolvido;
@@ -842,13 +832,14 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     if (!texto && TIPOS_PROTOCOLO.has(tipoMsg)) return;
 
-    // Busca o cliente uma única vez para obter o lojaId correto (Bug C + D)
+    // Busca cliente desta loja
     const [clienteCelular] = await this.sql`
-      SELECT id, loja_id FROM clientes WHERE telefone = ${telefone} AND deleted_at IS NULL LIMIT 1
+      SELECT id, loja_id FROM clientes
+      WHERE telefone = ${telefone} AND loja_id = ${lojaId} AND deleted_at IS NULL LIMIT 1
     `;
 
     if (!clienteCelular) {
-      this.diag(`[Baileys] celular: cliente não encontrado para ${telefone} — msg não salva`);
+      this.diag(session, `[Baileys] celular: cliente não encontrado para ${telefone} loja=${lojaId} — msg não salva`);
       return;
     }
 
@@ -862,31 +853,27 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     });
 
     if (salvo > 0) {
-      this.diag(`[Baileys] msg celular salva → ${telefone}: "${texto.slice(0, 60)}"`);
-      // Só verifica gatilho para mensagens reais do celular (ecos do sistema têm salvo === 0)
+      this.diag(session, `[Baileys] msg celular salva → ${telefone}: "${texto.slice(0, 60)}"`);
       if (texto) {
         await this.verificarGatilhoCompra(telefone, texto, clienteCelular.lojaId).catch((e: any) =>
-          this.diag(`[Baileys] erro em verificarGatilhoCompra: ${e?.message}`),
+          this.diag(session, `[Baileys] erro em verificarGatilhoCompra: ${e?.message}`),
         );
       }
     }
-    // salvo === 0: eco de msg do sistema (whatsapp_message_id já existia) → ignorado
   }
 
-  // Normaliza texto para comparação case-insensitive sem acento
   normalizarTexto(s: string): string {
     return normalizarTexto(s);
   }
 
   private extrairValorMonetario(texto: string): number | null {
-    // Tenta padrões do mais específico para o menos, priorizando R$
     const padroes = [
-      /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{1,2})/i, // R$ 1.250,00
-      /R\$\s*(\d+,\d{1,2})/i,                  // R$ 89,90
-      /R\$\s*(\d+\.\d{1,2})/i,                 // R$ 89.90
-      /R\$\s*(\d+)/i,                           // R$ 89
-      /(\d{1,3}(?:\.\d{3})+,\d{1,2})/,         // 1.250,00
-      /(\d+,\d{2})/,                            // 89,90
+      /R\$\s*(\d{1,3}(?:\.\d{3})*,\d{1,2})/i,
+      /R\$\s*(\d+,\d{1,2})/i,
+      /R\$\s*(\d+\.\d{1,2})/i,
+      /R\$\s*(\d+)/i,
+      /(\d{1,3}(?:\.\d{3})+,\d{1,2})/,
+      /(\d+,\d{2})/,
     ];
     for (const p of padroes) {
       const m = p.exec(texto);
@@ -906,33 +893,33 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const gatilhos = await this.sql`
       SELECT frase FROM gatilhos_compra WHERE loja_id = ${lojaId} AND ativo = true
     `;
-    this.diag(`[GATILHO] testando ${gatilhos.length} gatilho(s) para ${telefone} | msg="${texto.slice(0, 60)}"`);
+    this.logger.log(`[GATILHO] testando ${gatilhos.length} gatilho(s) para ${telefone} | msg="${texto.slice(0, 60)}"`);
     if (!gatilhos.length) {
-      this.diag(`[GATILHO] nenhum gatilho ativo para loja=${lojaId} — abortando`);
+      this.logger.log(`[GATILHO] nenhum gatilho ativo para loja=${lojaId} — abortando`);
       return;
     }
 
     for (const g of gatilhos) {
       const fraseNorm = this.normalizarTexto(g.frase);
-      this.diag(`[GATILHO] frase="${g.frase}" norm="${fraseNorm}" | textoNorm="${textoNorm.slice(0, 60)}" | match=${textoNorm.includes(fraseNorm)}`);
+      this.logger.log(`[GATILHO] frase="${g.frase}" norm="${fraseNorm}" | textoNorm="${textoNorm.slice(0, 60)}" | match=${textoNorm.includes(fraseNorm)}`);
     }
 
     const match = gatilhos.find((g: any) => textoNorm.includes(this.normalizarTexto(g.frase)));
     if (!match) {
-      this.diag(`[GATILHO] nenhum match para msg de ${telefone}`);
+      this.logger.log(`[GATILHO] nenhum match para msg de ${telefone}`);
       return;
     }
 
-    this.diag(`[GATILHO] MATCH frase="${match.frase}" para ${telefone}`);
+    this.logger.log(`[GATILHO] MATCH frase="${match.frase}" para ${telefone}`);
 
     const [cliente] = await this.sql`
       SELECT id FROM clientes WHERE telefone = ${telefone} AND loja_id = ${lojaId} AND deleted_at IS NULL LIMIT 1
     `;
     if (!cliente) {
-      this.diag(`[GATILHO] cliente não encontrado para ${telefone} loja=${lojaId} — abortando`);
+      this.logger.log(`[GATILHO] cliente não encontrado para ${telefone} loja=${lojaId} — abortando`);
       return;
     }
-    this.diag(`[GATILHO] cliente encontrado id=${cliente.id}`);
+    this.logger.log(`[GATILHO] cliente encontrado id=${cliente.id}`);
 
     const [pedidoAberto] = await this.sql`
       SELECT p.id FROM pedidos p
@@ -950,7 +937,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     `;
 
     const valor = this.extrairValorMonetario(texto);
-    this.diag(`[GATILHO] valor extraído da mensagem: ${valor ?? 'nenhum'}`);
+    this.logger.log(`[GATILHO] valor extraído da mensagem: ${valor ?? 'nenhum'}`);
 
     if (pedidoAberto) {
       await this.sql`
@@ -963,14 +950,13 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           updated_at     = NOW()
         WHERE id = ${pedidoAberto.id}
       `;
-      this.diag(`[GATILHO] pedido ${pedidoAberto.id} → comprou via palavra_chave, valor=${valor ?? 'não capturado'}`);
+      this.logger.log(`[GATILHO] pedido ${pedidoAberto.id} → comprou via palavra_chave, valor=${valor ?? 'não capturado'}`);
     } else {
-      // Venda que não veio de lembrete — cria pedido direto
       await this.sql`
         INSERT INTO pedidos (loja_id, cliente_id, etapa_id, status_jornada, confirmado_por, confirmado_em, valor)
         VALUES (${lojaId}, ${cliente.id}, ${etapaComprou?.id ?? null}, 'comprou', 'palavra_chave', NOW(), ${valor})
       `;
-      this.diag(`[GATILHO] nenhum pedido aberto para cliente=${cliente.id} — pedido direto criado via palavra_chave, valor=${valor ?? 'não capturado'}`);
+      this.logger.log(`[GATILHO] nenhum pedido aberto para cliente=${cliente.id} — pedido direto criado via palavra_chave, valor=${valor ?? 'não capturado'}`);
     }
   }
 
@@ -1007,13 +993,13 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       `;
       return result.count ?? 0;
     } catch (err: any) {
-      this.diag(`[Baileys] erro ao registrar mensagem: ${err?.message}`);
+      this.logger.log(`[Baileys] erro ao registrar mensagem: ${err?.message}`);
       return -1;
     }
   }
 
   // ----------------------------------------------------------------
-  // Envio de mensagens
+  // Envio de mensagens (usa o socket da loja correta)
   // ----------------------------------------------------------------
 
   async enviarLembrete(params: {
@@ -1028,11 +1014,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   }) {
     const { telefone, clienteNome, clienteWhatsappNome, produtoNome, quantidade, unidade, lembreteId, lojaId } = params;
 
-    // Se o nome registrado é apenas o número de telefone, prefere o pushName do WhatsApp
     const nomeEhTelefone = /^\+\d{8,15}$/.test(clienteNome.trim());
     const nomeEfetivo = (nomeEhTelefone && clienteWhatsappNome) ? clienteWhatsappNome : clienteNome;
 
-    // Carrega fluxo da loja para usar mensagem_lembrete configurada
     const [fluxo] = await this.sql`
       SELECT mensagem_lembrete FROM fluxo_conversa WHERE loja_id = ${lojaId} AND ativo = true LIMIT 1
     `;
@@ -1056,7 +1040,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       whatsappMsgId: msgId || null, origem: 'sistema',
     });
 
-    // Cria/renova sessão de conversa para capturar a resposta do cliente
     const [cliente] = await this.sql`
       SELECT id FROM clientes
       WHERE telefone = ${telefone} AND loja_id = ${lojaId} AND deleted_at IS NULL LIMIT 1
@@ -1069,88 +1052,100 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         INSERT INTO sessao_conversa (loja_id, cliente_id, lembrete_id, expira_em)
         VALUES (${lojaId}, ${cliente.id}, ${lembreteId}, NOW() + INTERVAL '48 hours')
       `;
-      this.diag(`[SESSAO] criada: clienteId=${cliente.id} lembreteId=${lembreteId} loja=${lojaId} expira_em=+48h`);
+      this.logger.log(`[SESSAO] criada: clienteId=${cliente.id} lembreteId=${lembreteId} loja=${lojaId} expira_em=+48h`);
     } else {
-      this.diag(`[SESSAO] AVISO: cliente não encontrado para ${telefone} loja=${lojaId} — sessão NÃO criada`);
+      this.logger.warn(`[SESSAO] AVISO: cliente não encontrado para ${telefone} loja=${lojaId} — sessão NÃO criada`);
     }
   }
 
-  async enviarMensagem(telefone: string, texto: string, lojaId?: string): Promise<string> {
-    if (!this.socket || this.status !== 'conectado') {
-      throw new Error('WhatsApp não está conectado. Escaneie o QR Code em /configuracoes.');
+  async enviarMensagem(telefone: string, texto: string, lojaId: string): Promise<string> {
+    const session = this.sessions.get(lojaId);
+
+    if (!session || !session.socket || session.status !== 'conectado') {
+      throw new Error(`WhatsApp da loja ${lojaId} não está conectado. Escaneie o QR Code em /configuracoes.`);
     }
 
     const numero = telefone.replace('+', '').replace(/\D/g, '');
     const jid = `${numero}@s.whatsapp.net`;
 
-    const enviado = await this.socket.sendMessage(jid, { text: texto });
+    const enviado = await session.socket.sendMessage(jid, { text: texto });
 
     const sentJid: string = enviado?.key?.remoteJid ?? '';
     if (sentJid.endsWith('@lid')) {
-      await this.salvarMapeamentoLid(sentJid, jid, lojaId);
-      this.diag(`[Baileys] LID capturado ao enviar: ${sentJid} → ${jid}`);
+      await this.salvarMapeamentoLid(sentJid, jid, session);
+      this.diag(session, `[Baileys] LID capturado ao enviar: ${sentJid} → ${jid}`);
     }
 
     const msgId: string = enviado?.key?.id ?? '';
     if (msgId) {
-      this.pendingSendJids.set(msgId, jid);
-      setTimeout(() => this.pendingSendJids.delete(msgId), 60_000);
+      session.pendingSendJids.set(msgId, jid);
+      setTimeout(() => session.pendingSendJids.delete(msgId), 60_000);
     }
 
-    this.logger.log(`Mensagem enviada para ${telefone}`);
+    this.logger.log(`Mensagem enviada para ${telefone} via loja ${lojaId}`);
     return msgId;
   }
 
   // ----------------------------------------------------------------
-  // API pública para o controller
+  // API pública para o controller (todos os métodos são por loja)
   // ----------------------------------------------------------------
 
-  getQrCode(): { qrcode: string | null; status: StatusConexao } {
-    return { qrcode: this.qrAtual, status: this.status };
+  estaConectado(lojaId: string): boolean {
+    return this.sessions.get(lojaId)?.status === 'conectado';
   }
 
-  getDiagnostico() {
+  getQrCode(lojaId: string): { qrcode: string | null; status: StatusConexao } {
+    const session = this.sessions.get(lojaId);
+    return { qrcode: session?.qrAtual ?? null, status: session?.status ?? 'desconectado' };
+  }
+
+  getDiagnostico(lojaId: string) {
+    const session = this.sessions.get(lojaId);
     return {
-      status: this.status,
-      qrcodePresente: !!this.qrAtual,
-      socketAtivo: !!this.socket,
-      reconectando: this.reconectando,
-      msgsRecebidas: this.msgsRecebidas,
-      msgsIgnoradas: this.msgsIgnoradas,
-      ultimaMsgEm: this.ultimaMsgEm,
-      logs: [...this.diagLogs],
+      lojaId,
+      status: session?.status ?? 'desconectado',
+      qrcodePresente: !!(session?.qrAtual),
+      socketAtivo: !!(session?.socket),
+      reconectando: session?.reconectando ?? false,
+      msgsRecebidas: session?.msgsRecebidas ?? 0,
+      msgsIgnoradas: session?.msgsIgnoradas ?? 0,
+      ultimaMsgEm: session?.ultimaMsgEm ?? null,
+      logs: session ? [...session.diagLogs] : [],
     };
   }
 
-  async marcarLidaNoWhatsApp(telefone: string, messageIds: string[]): Promise<void> {
-    if (!this.socket || this.status !== 'conectado' || messageIds.length === 0) return;
+  async marcarLidaNoWhatsApp(telefone: string, messageIds: string[], lojaId: string): Promise<void> {
+    const session = this.sessions.get(lojaId);
+    if (!session?.socket || session.status !== 'conectado' || messageIds.length === 0) return;
     const numero = telefone.replace('+', '').replace(/\D/g, '');
     const jid = `${numero}@s.whatsapp.net`;
     const keys = messageIds.map((id) => ({ remoteJid: jid, id, fromMe: false }));
-    await this.socket.readMessages(keys).catch((e: any) =>
-      this.diag(`[Baileys] readMessages falhou: ${e?.message}`),
+    await session.socket.readMessages(keys).catch((e: any) =>
+      this.diag(session, `[Baileys] readMessages falhou: ${e?.message}`),
     );
   }
 
-  async desconectar() {
-    this.reconectando = false;
-    await this.socket?.logout();
-    this.socket = null;
-    this.qrAtual = null;
-    this.status = 'desconectado';
+  async desconectar(lojaId: string) {
+    const session = this.sessions.get(lojaId);
+    if (!session) return;
+    session.reconectando = false;
+    await session.socket?.logout();
+    session.socket = null;
+    session.qrAtual = null;
+    session.status = 'desconectado';
   }
 
-  async reconectar() {
-    this.logger.log('[Baileys] reconectar() chamado manualmente');
-    // Seta reconectando=true ANTES de end() para que o handler connection.close
-    // do socket antigo não dispare um segundo iniciarSessao() concorrente.
-    this.reconectando = true;
-    this.socket?.end(undefined);
-    this.socket = null;
-    this.qrAtual = null;
-    this.status = 'desconectado';
-    await this.sql`DELETE FROM baileys_auth_state`.catch(() => {});
-    this.reconectando = false;
-    await this.iniciarSessao();
+  async reconectar(lojaId: string) {
+    this.logger.log(`[Baileys] reconectar() chamado para loja ${lojaId}`);
+    const session = this.ensureSession(lojaId);
+    session.reconectando = true;
+    session.socket?.end(undefined);
+    session.socket = null;
+    session.qrAtual = null;
+    session.status = 'desconectado';
+    // Apaga apenas o auth state desta loja (prefixado com lojaId)
+    await this.sql`DELETE FROM baileys_auth_state WHERE id LIKE ${lojaId + ':%'}`.catch(() => {});
+    session.reconectando = false;
+    await this.iniciarSessao(lojaId);
   }
 }

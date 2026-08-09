@@ -1,10 +1,12 @@
-// Auth state do Baileys persistido no PostgreSQL em vez do filesystem.
-// Cada chave/credencial vira uma linha em baileys_auth_state com id = 'creds' ou '${tipo}-${id}'.
+// Auth state do Baileys persistido no PostgreSQL.
+// Cada loja tem seu próprio conjunto de credenciais, prefixadas com lojaId.
 const { initAuthCreds, BufferJSON } = require('@whiskeysockets/baileys');
 
-export async function useDatabaseAuthState(sql: any) {
+export async function useDatabaseAuthState(sql: any, lojaId: string) {
+  const prefix = `${lojaId}:`;
+
   async function readData(id: string): Promise<any | null> {
-    const rows = await sql`SELECT value FROM baileys_auth_state WHERE id = ${id}`;
+    const rows = await sql`SELECT value FROM baileys_auth_state WHERE id = ${prefix + id}`;
     if (!rows[0]) return null;
     return JSON.parse(rows[0].value, BufferJSON.reviver);
   }
@@ -13,17 +15,16 @@ export async function useDatabaseAuthState(sql: any) {
     const value = JSON.stringify(data, BufferJSON.replacer);
     await sql`
       INSERT INTO baileys_auth_state (id, value)
-      VALUES (${id}, ${value})
+      VALUES (${prefix + id}, ${value})
       ON CONFLICT (id) DO UPDATE
         SET value = EXCLUDED.value, updated_at = NOW()
     `;
   }
 
   async function removeData(id: string): Promise<void> {
-    await sql`DELETE FROM baileys_auth_state WHERE id = ${id}`;
+    await sql`DELETE FROM baileys_auth_state WHERE id = ${prefix + id}`;
   }
 
-  // Carrega ou inicializa as credenciais
   const creds = (await readData('creds')) ?? initAuthCreds();
 
   return {

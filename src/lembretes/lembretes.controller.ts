@@ -65,7 +65,7 @@ export class LembretesController {
   // POST /api/v1/lembretes/represados/enviar-todos
   @Post('represados/enviar-todos')
   async enviarTodosRepresados(@UsuarioAtual() usuario: any) {
-    if (!this.whatsappService.estaConectado()) {
+    if (!this.whatsappService.estaConectado(usuario.lojaId)) {
       throw new BadRequestException('WhatsApp desconectado — conecte antes de enviar');
     }
     const lista = await this.lembretesService.listarRepresados(usuario.lojaId);
@@ -96,7 +96,7 @@ export class LembretesController {
     @Param('id', ParseUUIDPipe) id: string,
     @UsuarioAtual() usuario: any,
   ) {
-    if (!this.whatsappService.estaConectado()) {
+    if (!this.whatsappService.estaConectado(usuario.lojaId)) {
       throw new BadRequestException('WhatsApp desconectado — conecte antes de enviar');
     }
     const l = await this.lembretesService.buscarRepresadoParaEnvio(id, usuario.lojaId);

@@ -86,7 +86,7 @@ export class FluxoConversaService {
       loja: loja?.nome ?? '',
     });
 
-    if (!this.baileysService.estaConectado()) {
+    if (!this.baileysService.estaConectado(lojaId)) {
       throw new BadRequestException('WhatsApp não está conectado. Escaneie o QR Code em Configurações.');
     }
 

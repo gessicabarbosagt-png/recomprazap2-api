@@ -20,41 +20,43 @@ export class WhatsappController {
     private readonly baileysService: WhatsappBaileysService,
   ) {}
 
-  // GET /api/v1/whatsapp/status — status público da conexão (sem QR Code)
+  // GET /api/v1/whatsapp/status — status da conexão desta loja
+  @UseGuards(JwtAuthGuard)
   @Get('status')
-  status() {
-    const { status } = this.baileysService.getQrCode();
+  status(@UsuarioAtual() usuario: UsuarioLogado) {
+    const { status } = this.baileysService.getQrCode(usuario.lojaId);
     return { status };
   }
 
   // GET /api/v1/whatsapp/diagnostico — logs internos do Baileys para debug
+  @UseGuards(JwtAuthGuard)
   @Get('diagnostico')
-  diagnostico() {
-    return this.baileysService.getDiagnostico();
+  diagnostico(@UsuarioAtual() usuario: UsuarioLogado) {
+    return this.baileysService.getDiagnostico(usuario.lojaId);
   }
 
-  // GET /api/v1/whatsapp/qrcode — retorna QR Code e status da conexão
+  // GET /api/v1/whatsapp/qrcode — retorna QR Code e status da conexão desta loja
   @UseGuards(JwtAuthGuard)
   @Get('qrcode')
-  qrcode() {
-    return this.baileysService.getQrCode();
+  qrcode(@UsuarioAtual() usuario: UsuarioLogado) {
+    return this.baileysService.getQrCode(usuario.lojaId);
   }
 
-  // POST /api/v1/whatsapp/desconectar — encerra a sessão Baileys
+  // POST /api/v1/whatsapp/desconectar — encerra a sessão desta loja
   @UseGuards(JwtAuthGuard)
   @Post('desconectar')
   @HttpCode(HttpStatus.OK)
-  async desconectar() {
-    await this.baileysService.desconectar();
+  async desconectar(@UsuarioAtual() usuario: UsuarioLogado) {
+    await this.baileysService.desconectar(usuario.lojaId);
     return { ok: true, mensagem: 'WhatsApp desconectado' };
   }
 
-  // POST /api/v1/whatsapp/reconectar — força novo ciclo de conexão e gera novo QR
+  // POST /api/v1/whatsapp/reconectar — força novo ciclo de conexão para esta loja
   @UseGuards(JwtAuthGuard)
   @Post('reconectar')
   @HttpCode(HttpStatus.OK)
-  async reconectar() {
-    await this.baileysService.reconectar();
+  async reconectar(@UsuarioAtual() usuario: UsuarioLogado) {
+    await this.baileysService.reconectar(usuario.lojaId);
     return { ok: true, mensagem: 'Reconexão iniciada — aguarde o novo QR Code' };
   }
 
