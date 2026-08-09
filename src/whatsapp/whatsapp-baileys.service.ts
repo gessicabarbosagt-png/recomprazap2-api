@@ -67,6 +67,7 @@ interface LojaSession {
 export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WhatsappBaileysService.name);
   private readonly sessions = new Map<string, LojaSession>();
+  private readonly iniciando = new Set<string>();
 
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
@@ -1096,7 +1097,19 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
   getQrCode(lojaId: string): { qrcode: string | null; status: StatusConexao } {
     const session = this.sessions.get(lojaId);
-    return { qrcode: session?.qrAtual ?? null, status: session?.status ?? 'desconectado' };
+
+    // Se não há socket ativo, inicia a sessão em background (ex: loja pausada que o usuário quer reconectar)
+    if (!session?.socket) {
+      if (!this.iniciando.has(lojaId)) {
+        this.iniciando.add(lojaId);
+        this.iniciarSessao(lojaId)
+          .catch((err) => this.logger.error(`[Baileys] erro ao iniciar sessão on-demand ${lojaId}: ${err?.message}`))
+          .finally(() => this.iniciando.delete(lojaId));
+      }
+      return { qrcode: null, status: 'aguardando' };
+    }
+
+    return { qrcode: session.qrAtual, status: session.status };
   }
 
   getDiagnostico(lojaId: string) {
