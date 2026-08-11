@@ -14,12 +14,12 @@ export interface CriarCicloDto {
   clienteId: string;
   produtoId: string;
   intervaloDias: number;
-  quantidade?: number;
+  quantidade?: string;
 }
 
 export interface AtualizarCicloDto {
   intervaloDias?: number;
-  quantidade?: number;
+  quantidade?: string;
   ativo?: boolean;
 }
 

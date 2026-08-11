@@ -695,7 +695,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         `;
         await this.sql`
           INSERT INTO pedidos (loja_id, lembrete_id, cliente_id, produto_id, quantidade, etapa_id, status)
-          VALUES (${lembrete.lojaId}, ${lembrete.id}, ${lembrete.clienteId}, ${lembrete.produtoId}, ${lembrete.quantidade ?? 1}, ${etapaInicial?.id ?? null}, 'pendente')
+          VALUES (${lembrete.lojaId}, ${lembrete.id}, ${lembrete.clienteId}, ${lembrete.produtoId}, ${parseFloat(lembrete.quantidade) || 1}, ${etapaInicial?.id ?? null}, 'pendente')
         `;
         await this.sql`UPDATE lembretes SET status='respondido', updated_at=NOW() WHERE id=${lembrete.id}`;
         break;
@@ -774,7 +774,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         `;
         await this.sql`
           INSERT INTO pedidos (loja_id, lembrete_id, cliente_id, produto_id, quantidade, etapa_id, status)
-          VALUES (${lembrete.lojaId}, ${lembrete.id}, ${lembrete.clienteId}, ${lembrete.produtoId}, ${lembrete.quantidade ?? 1}, ${etapaInicialLegado?.id ?? null}, 'pendente')
+          VALUES (${lembrete.lojaId}, ${lembrete.id}, ${lembrete.clienteId}, ${lembrete.produtoId}, ${parseFloat(lembrete.quantidade) || 1}, ${etapaInicialLegado?.id ?? null}, 'pendente')
         `;
         await this.sql`UPDATE lembretes SET status='respondido', updated_at=NOW() WHERE id=${lembrete.id}`;
         break;
@@ -1008,12 +1008,12 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     clienteNome: string;
     clienteWhatsappNome?: string | null;
     produtoNome: string;
-    quantidade?: number;
+    quantidade?: string;
     unidade?: string;
     lembreteId: string;
     lojaId: string;
   }) {
-    const { telefone, clienteNome, clienteWhatsappNome, produtoNome, quantidade, unidade, lembreteId, lojaId } = params;
+    const { telefone, clienteNome, clienteWhatsappNome, produtoNome, quantidade, lembreteId, lojaId } = params;
 
     const nomeEhTelefone = /^\+\d{8,15}$/.test(clienteNome.trim());
     const nomeEfetivo = (nomeEhTelefone && clienteWhatsappNome) ? clienteWhatsappNome : clienteNome;
@@ -1025,7 +1025,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const templateBase: string =
       fluxo?.mensagemLembrete ?? fluxo?.mensagem_lembrete ?? MENSAGEM_LEMBRETE_PADRAO;
 
-    const qtdTexto = quantidade ? ` (${quantidade}${unidade ? ' ' + unidade : ''})` : '';
+    const qtdTexto = quantidade ? ` (${quantidade})` : '';
 
     const [loja] = await this.sql`SELECT nome FROM lojas WHERE id = ${lojaId}`;
     const texto = interpolarVariaveis(templateBase, {

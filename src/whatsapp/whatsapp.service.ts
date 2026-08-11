@@ -20,7 +20,7 @@ export class WhatsappService {
     clienteNome: string;
     clienteWhatsappNome?: string | null;
     produtoNome: string;
-    quantidade?: number;
+    quantidade?: string;
     unidade?: string;
     lembreteId: string;
     lojaId: string;
