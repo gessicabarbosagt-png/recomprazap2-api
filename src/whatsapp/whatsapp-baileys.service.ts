@@ -266,7 +266,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       session.socket = makeWASocket({
         version,
         auth: state,
-        browser: Browsers.macOS('Chrome'),
+        browser: ['RecompraZap', 'Chrome', '1.0.0'],
         printQRInTerminal: false,
         logger: LOGGER_SILENCIOSO,
         connectTimeoutMs: 60_000,
