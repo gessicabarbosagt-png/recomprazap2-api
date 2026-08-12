@@ -3,10 +3,15 @@ import {
 } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { AdminGuard } from './admin.guard';
+import { NotificacoesService } from '../notificacoes/notificacoes.service';
 import {
   IsString, IsEmail, IsOptional, IsBoolean, IsNumber, IsIn,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+
+class EnviarNotificacaoDto {
+  @IsString() mensagem: string;
+}
 
 class CriarLojaDto {
   @IsString() lojaNome: string;
@@ -29,7 +34,10 @@ class AtivarDesativarDto {
 @UseGuards(AdminGuard)
 @Controller('admin')
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly notificacoesService: NotificacoesService,
+  ) {}
 
   // GET /api/v1/admin/saude — cards da home do admin
   @Get('saude')
@@ -77,5 +85,22 @@ export class AdminController {
     @Param('userId') userId: string,
   ) {
     return this.adminService.resetarSenha(lojaId, userId);
+  }
+
+  // POST /api/v1/admin/notificacoes/loja/:lojaId — notifica uma loja específica
+  @Post('notificacoes/loja/:lojaId')
+  @HttpCode(HttpStatus.OK)
+  notificarLoja(
+    @Param('lojaId') lojaId: string,
+    @Body() dto: EnviarNotificacaoDto,
+  ) {
+    return this.notificacoesService.criarParaLoja(lojaId, dto.mensagem);
+  }
+
+  // POST /api/v1/admin/notificacoes/desconectadas — notifica todas as lojas desconectadas
+  @Post('notificacoes/desconectadas')
+  @HttpCode(HttpStatus.OK)
+  notificarDesconectadas(@Body() dto: EnviarNotificacaoDto) {
+    return this.notificacoesService.criarParaDesconectadas(dto.mensagem);
   }
 }

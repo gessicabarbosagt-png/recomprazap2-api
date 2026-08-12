@@ -15,6 +15,7 @@ import { CodigosOrigemModule } from './codigos-origem/codigos-origem.module';
 import { GatilhosCompraModule } from './gatilhos-compra/gatilhos-compra.module';
 import { EtapasJornadaModule } from './etapas-jornada/etapas-jornada.module';
 import { AdminModule } from './admin/admin.module';
+import { NotificacoesModule } from './notificacoes/notificacoes.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { AdminModule } from './admin/admin.module';
 
     // Painel admin do sistema
     AdminModule,
+    NotificacoesModule,
 
     // Worker: Crons + Filas BullMQ + Processors
     // Responsável por toda a automação de envio de lembretes

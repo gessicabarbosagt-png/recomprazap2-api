@@ -207,6 +207,21 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
         `.catch(() => {});
         await sql`ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS etapa_id UUID REFERENCES etapas_jornada(id)`.catch(() => {});
         await sql`ALTER TABLE lembretes ADD COLUMN IF NOT EXISTS represado BOOLEAN NOT NULL DEFAULT FALSE`.catch(() => {});
+
+        // ---- Notificações do admin para lojas ----
+        await sql`
+          CREATE TABLE IF NOT EXISTS notificacoes_admin (
+            id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            loja_id   UUID NOT NULL,
+            mensagem  TEXT NOT NULL,
+            criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            lida_em   TIMESTAMPTZ
+          )
+        `.catch(() => {});
+        await sql`CREATE INDEX IF NOT EXISTS idx_notif_admin_loja ON notificacoes_admin (loja_id) WHERE lida_em IS NULL`.catch(() => {});
+
+        // ---- Perfil: nome do usuário editável ----
+        await sql`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS nome_display TEXT`.catch(() => {});
         await sql`
           UPDATE pedidos p
           SET etapa_id = (
