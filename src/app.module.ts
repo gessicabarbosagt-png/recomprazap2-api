@@ -17,6 +17,8 @@ import { EtapasJornadaModule } from './etapas-jornada/etapas-jornada.module';
 import { AdminModule } from './admin/admin.module';
 import { NotificacoesModule } from './notificacoes/notificacoes.module';
 import { PagamentosModule } from './pagamentos/pagamentos.module';
+import { MetaAdsModule } from './meta-ads/meta-ads.module';
+import { LinksOrigemModule } from './links-origem/links-origem.module';
 
 @Module({
   imports: [
@@ -41,6 +43,10 @@ import { PagamentosModule } from './pagamentos/pagamentos.module';
     AdminModule,
     NotificacoesModule,
     PagamentosModule,
+
+    // Integrações e rastreamento
+    MetaAdsModule,
+    LinksOrigemModule,
 
     // Worker: Crons + Filas BullMQ + Processors
     // Responsável por toda a automação de envio de lembretes

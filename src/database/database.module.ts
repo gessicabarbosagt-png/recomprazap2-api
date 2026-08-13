@@ -262,6 +262,29 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
         await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_pagamentos_mp_id ON pagamentos (mp_payment_id) WHERE mp_payment_id IS NOT NULL`.catch(() => {});
         await sql`CREATE INDEX IF NOT EXISTS idx_pagamentos_loja ON pagamentos (loja_id, criado_em DESC)`.catch(() => {});
 
+        // ---- Integração Meta Ads (CTWA Conversions API) ----
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS meta_pixel_id TEXT`.catch(() => {});
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS meta_access_token TEXT`.catch(() => {});
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS meta_integration_ativa BOOLEAN NOT NULL DEFAULT FALSE`.catch(() => {});
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS meta_eventos_ativos JSONB NOT NULL DEFAULT '["lead_ctwa"]'`.catch(() => {});
+
+        // ---- Número WA da loja (populado quando Baileys conecta) ----
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS wa_numero TEXT`.catch(() => {});
+
+        // ---- Links de rastreamento por canal ----
+        await sql`
+          CREATE TABLE IF NOT EXISTS links_origem (
+            id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            loja_id          UUID NOT NULL REFERENCES lojas(id) ON DELETE CASCADE,
+            slug             TEXT NOT NULL UNIQUE,
+            rotulo           TEXT NOT NULL,
+            mensagem_prefixo TEXT NOT NULL,
+            cliques_total    INT NOT NULL DEFAULT 0,
+            criado_em        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `.catch(() => {});
+        await sql`CREATE INDEX IF NOT EXISTS idx_links_origem_loja ON links_origem (loja_id, criado_em DESC)`.catch(() => {});
+
         return sql;
       },
     },

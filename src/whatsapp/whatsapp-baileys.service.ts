@@ -6,6 +6,7 @@ import {
   Inject,
 } from '@nestjs/common';
 import { DATABASE_CLIENT } from '../database/database.module';
+import { MetaAdsService } from '../meta-ads/meta-ads.service';
 import { useDatabaseAuthState } from './baileys-auth-state';
 import {
   normalizarResposta,
@@ -71,6 +72,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
+    private readonly metaAdsService: MetaAdsService,
   ) {}
 
   // Inicia sessões para todas as lojas ativas ao subir o serviço
@@ -319,7 +321,15 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           session.qrAtual = null;
           session.reconectando = false;
           this.diag(session, '[Baileys] ✅ WhatsApp conectado');
-          this.sql`UPDATE lojas SET wa_status = 'conectado', wa_atualizado_em = NOW() WHERE id = ${lojaId}`.catch(() => {});
+          const waNumero = session.socket.user?.id
+            ? jidNormalizedUser(session.socket.user.id).replace('@s.whatsapp.net', '')
+            : null;
+          this.sql`
+            UPDATE lojas
+            SET wa_status = 'conectado', wa_atualizado_em = NOW(),
+                wa_numero = COALESCE(${waNumero}, wa_numero)
+            WHERE id = ${lojaId}
+          `.catch(() => {});
           this.tentarResolverPendentes(session).catch(() => {});
         }
 
@@ -518,9 +528,11 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       const externalAdReply = contextInfo?.externalAdReply;
       let origemLead: string | null = null;
       let origemDetalhe: any = null;
+      let ctwaClid: string | null = null;
 
       if (externalAdReply) {
         origemLead = 'meta_ads';
+        ctwaClid = externalAdReply.ctwaClid ?? contextInfo?.ctwaClid ?? null;
         origemDetalhe = {
           sourceUrl:             externalAdReply.sourceUrl ?? null,
           title:                 externalAdReply.title ?? null,
@@ -529,8 +541,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           sourceType:            externalAdReply.sourceType ?? null,
           mediaType:             externalAdReply.mediaType ?? null,
           renderLargerThumbnail: externalAdReply.renderLargerThumbnail ?? null,
+          ctwaClid,
         };
-        this.diag(session, `[Baileys] CTWA detectado para ${telefone}: sourceUrl=${origemDetalhe.sourceUrl} title="${origemDetalhe.title}"`);
+        this.diag(session, `[Baileys] CTWA detectado para ${telefone}: sourceUrl=${origemDetalhe.sourceUrl} title="${origemDetalhe.title}" ctwaClid=${ctwaClid ?? 'ausente'}`);
       }
 
       // Tracking codes são buscados apenas desta loja (socket determina a loja)
@@ -574,6 +587,11 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       `;
       cliente = novoCliente;
       this.diag(session, `[Baileys] cliente auto-criado: ${telefone} nome="${nomeInicial}" (loja=${lojaId} origem=${origemLead ?? 'desconhecida'})`);
+
+      // Dispara evento CTWA na Meta Conversions API (assíncrono, não bloqueia)
+      if (origemLead === 'meta_ads') {
+        this.metaAdsService.enviarEventoCTWA(lojaId, ctwaClid, telefone);
+      }
     }
 
     if (cliente) {

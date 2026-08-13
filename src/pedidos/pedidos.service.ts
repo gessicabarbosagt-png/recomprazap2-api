@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { DATABASE_CLIENT } from '../database/database.module';
 import { CiclosService } from '../ciclos/ciclos.service';
+import { MetaAdsService } from '../meta-ads/meta-ads.service';
 
 export type StatusJornada = 'aguardando' | 'orcamento_enviado' | 'comprou' | 'nao_comprou';
 
@@ -32,6 +33,7 @@ export class PedidosService {
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
     private readonly ciclosService: CiclosService,
+    private readonly metaAdsService: MetaAdsService,
   ) {}
 
   // BRT é fixamente UTC-3 desde 2019 (sem horário de verão)
@@ -240,6 +242,19 @@ export class PedidosService {
       RETURNING id, etapa_id, status_jornada, valor, confirmado_em, confirmado_por
     `;
     if (!atualizado) throw new NotFoundException('Pedido não encontrado');
+
+    // Dispara evento Purchase na Meta CAPI quando pedido vira "Comprou" (assíncrono)
+    if (etapa.tipo === 'final_comprou') {
+      const [pedidoCliente] = await this.sql`
+        SELECT c.telefone FROM pedidos p
+        JOIN clientes c ON c.id = p.cliente_id
+        WHERE p.id = ${id} AND p.loja_id = ${lojaId}
+      `;
+      if (pedidoCliente) {
+        this.metaAdsService.enviarEventoCompra(lojaId, pedidoCliente.telefone, valorNormalizado);
+      }
+    }
+
     return atualizado;
   }
 
