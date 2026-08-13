@@ -238,6 +238,30 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
           WHERE p.etapa_id IS NULL AND p.deleted_at IS NULL
         `.catch(() => {});
 
+        // ---- Pagamentos / Mercado Pago ----
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS mp_subscription_id TEXT`.catch(() => {});
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS mp_payment_method TEXT`.catch(() => {});
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS mp_card_last_four TEXT`.catch(() => {});
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS inadimplente_desde TIMESTAMPTZ`.catch(() => {});
+        await sql`
+          CREATE TABLE IF NOT EXISTS pagamentos (
+            id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            loja_id            UUID NOT NULL,
+            mp_payment_id      TEXT,
+            tipo               TEXT NOT NULL,
+            valor              NUMERIC(10,2) NOT NULL,
+            status             TEXT NOT NULL DEFAULT 'pendente',
+            descricao          TEXT,
+            pix_qr_code        TEXT,
+            pix_qr_code_base64 TEXT,
+            pix_expira_em      TIMESTAMPTZ,
+            criado_em          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            atualizado_em      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `.catch(() => {});
+        await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_pagamentos_mp_id ON pagamentos (mp_payment_id) WHERE mp_payment_id IS NOT NULL`.catch(() => {});
+        await sql`CREATE INDEX IF NOT EXISTS idx_pagamentos_loja ON pagamentos (loja_id, criado_em DESC)`.catch(() => {});
+
         return sql;
       },
     },

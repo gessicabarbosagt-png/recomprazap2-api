@@ -7,6 +7,7 @@ import { AgendadorService } from './agendador.service';
 import { LembretesProcessor } from './lembretes.processor';
 import { RetryProcessor } from './retry.processor';
 import { WhatsappModule } from '../whatsapp/whatsapp.module';
+import { PagamentosModule } from '../pagamentos/pagamentos.module';
 
 import { FILA_LEMBRETES, FILA_RETRY } from './worker.constants';
 
@@ -42,6 +43,7 @@ import { FILA_LEMBRETES, FILA_RETRY } from './worker.constants';
 
     // WhatsappModule exporta WhatsappService, que os processors precisam
     WhatsappModule,
+    PagamentosModule,
   ],
   providers: [
     AgendadorService,    // Crons que alimentam as filas

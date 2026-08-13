@@ -4,6 +4,7 @@ import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { DATABASE_CLIENT } from '../database/database.module';
+import { PagamentosService } from '../pagamentos/pagamentos.service';
 import {
   FILA_LEMBRETES,
   FILA_RETRY,
@@ -20,6 +21,7 @@ export class AgendadorService implements OnApplicationBootstrap {
     @Inject(DATABASE_CLIENT) private readonly sql: any,
     @InjectQueue(FILA_LEMBRETES) private readonly filaLembretes: Queue,
     @InjectQueue(FILA_RETRY) private readonly filaRetry: Queue,
+    private readonly pagamentosService: PagamentosService,
   ) {}
 
   // Cancela lembretes presos como 'agendado' há mais de 4 horas.
@@ -213,5 +215,19 @@ export class AgendadorService implements OnApplicationBootstrap {
     );
 
     this.logger.log(`Job agendado: lembrete ${lembrete.id} para ${ciclo.clienteNome}`);
+  }
+
+  // ----------------------------------------------------------------
+  // CRON DIÁRIO — Inadimplência e suspensão
+  // Roda às 08:00 todo dia.
+  // 1. Suspende lojas inadimplentes há 5+ dias (ativa = false)
+  // 2. Envia aviso (banner) para as que ainda estão dentro do prazo
+  // ----------------------------------------------------------------
+  @Cron('0 8 * * *')
+  async verificarInadimplentes() {
+    this.logger.log('[Cron] Verificando inadimplentes...');
+    const suspensas = await this.pagamentosService.suspenderInadimplentesVencidos();
+    const avisadas  = await this.pagamentosService.avisarInadimplentesAtivos();
+    this.logger.log(`[Cron] Inadimplentes: ${suspensas} suspensa(s), ${avisadas} avisada(s)`);
   }
 }
