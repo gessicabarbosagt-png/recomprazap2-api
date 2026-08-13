@@ -48,6 +48,12 @@ export class WhatsappService {
     } catch (err: any) {
       this.logger.warn('Erro ao registrar mensagem manual no histórico', err?.message);
     }
+
+    try {
+      await this.baileysService.verificarGatilhoCompra(telefone, conteudo, lojaId);
+    } catch (err: any) {
+      this.logger.warn('Erro em verificarGatilhoCompra (painel):', err?.message);
+    }
   }
 
   async listarMensagens(lojaId: string) {

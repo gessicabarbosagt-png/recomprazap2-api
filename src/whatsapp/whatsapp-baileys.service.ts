@@ -893,7 +893,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     return null;
   }
 
-  private async verificarGatilhoCompra(telefone: string, texto: string, lojaId: string): Promise<void> {
+  async verificarGatilhoCompra(telefone: string, texto: string, lojaId: string): Promise<void> {
     const textoNorm = this.normalizarTexto(texto);
 
     const gatilhos = await this.sql`
