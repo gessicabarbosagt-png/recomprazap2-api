@@ -588,6 +588,11 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     if (cliente) {
       await this.processarComFluxo(cliente.id, cliente.lojaId, textoExibido || texto, telefone, session);
+      if (texto) {
+        await this.verificarGatilhoCompra(telefone, texto, cliente.lojaId).catch((e: any) =>
+          this.diag(session, `[Baileys] erro em verificarGatilhoCompra (recebida): ${e?.message}`)
+        );
+      }
     } else if (/^[123]$/.test(texto.trim())) {
       await this.processarRespostaPorTelefone(texto.trim(), telefone, lojaId);
     }
