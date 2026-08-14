@@ -19,6 +19,7 @@ import { NotificacoesModule } from './notificacoes/notificacoes.module';
 import { PagamentosModule } from './pagamentos/pagamentos.module';
 import { MetaAdsModule } from './meta-ads/meta-ads.module';
 import { LinksOrigemModule } from './links-origem/links-origem.module';
+import { PlanosModule } from './planos/planos.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { LinksOrigemModule } from './links-origem/links-origem.module';
     // Integrações e rastreamento
     MetaAdsModule,
     LinksOrigemModule,
+    PlanosModule,
 
     // Worker: Crons + Filas BullMQ + Processors
     // Responsável por toda a automação de envio de lembretes

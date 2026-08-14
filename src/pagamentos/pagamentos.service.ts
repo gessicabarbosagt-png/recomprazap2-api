@@ -444,6 +444,25 @@ export class PagamentosService {
     }
   }
 
+  // ── Atualiza valor da assinatura no MP (chamado ao fazer upgrade) ───
+
+  async atualizarValorPreapproval(lojaId: string, novoValor: number) {
+    const [loja] = await this.sql`
+      SELECT mp_subscription_id FROM lojas WHERE id = ${lojaId} AND deleted_at IS NULL
+    `;
+    if (!loja?.mpSubscriptionId) return;
+    try {
+      await axios.put(
+        `${this.mpApiBase}/preapproval/${loja.mpSubscriptionId}`,
+        { auto_recurring: { transaction_amount: novoValor } },
+        { headers: this.mpHeaders() },
+      );
+      this.logger.log(`[MP] preapproval ${loja.mpSubscriptionId} valor atualizado para ${novoValor}`);
+    } catch (e: any) {
+      this.logger.warn(`[MP] erro ao atualizar valor preapproval ${loja.mpSubscriptionId}: ${e?.message}`);
+    }
+  }
+
   // ── Aviso diário (chamado pelo cron) ───────────────────────────────
 
   async avisarInadimplentesAtivos() {

@@ -5,6 +5,7 @@ import { Queue } from 'bull';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { DATABASE_CLIENT } from '../database/database.module';
 import { PagamentosService } from '../pagamentos/pagamentos.service';
+import { PlanosService } from '../planos/planos.service';
 import {
   FILA_LEMBRETES,
   FILA_RETRY,
@@ -22,6 +23,7 @@ export class AgendadorService implements OnApplicationBootstrap {
     @InjectQueue(FILA_LEMBRETES) private readonly filaLembretes: Queue,
     @InjectQueue(FILA_RETRY) private readonly filaRetry: Queue,
     private readonly pagamentosService: PagamentosService,
+    private readonly planosService: PlanosService,
   ) {}
 
   // Cancela lembretes presos como 'agendado' há mais de 4 horas.
@@ -229,5 +231,19 @@ export class AgendadorService implements OnApplicationBootstrap {
     const suspensas = await this.pagamentosService.suspenderInadimplentesVencidos();
     const avisadas  = await this.pagamentosService.avisarInadimplentesAtivos();
     this.logger.log(`[Cron] Inadimplentes: ${suspensas} suspensa(s), ${avisadas} avisada(s)`);
+  }
+
+  // ----------------------------------------------------------------
+  // CRON DIÁRIO — Aplicar downgrades de plano agendados
+  // Roda às 08:30. Aplica plano_pendente_slug quando prazo chegou,
+  // desde que a contagem de clientes não exceda o novo limite.
+  // ----------------------------------------------------------------
+  @Cron('30 8 * * *')
+  async aplicarDowngradesPendentes() {
+    this.logger.log('[Cron] Verificando downgrades de plano pendentes...');
+    const aplicados = await this.planosService.aplicarDowngradesPendentes();
+    if (aplicados > 0) {
+      this.logger.log(`[Cron] ${aplicados} downgrade(s) de plano aplicado(s)`);
+    }
   }
 }

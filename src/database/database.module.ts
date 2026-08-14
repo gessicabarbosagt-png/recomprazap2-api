@@ -285,6 +285,49 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
         `.catch(() => {});
         await sql`CREATE INDEX IF NOT EXISTS idx_links_origem_loja ON links_origem (loja_id, criado_em DESC)`.catch(() => {});
 
+        // ---- Catálogo de planos ----
+        await sql`
+          CREATE TABLE IF NOT EXISTS planos_catalogo (
+            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            slug            TEXT NOT NULL UNIQUE,
+            nome            TEXT NOT NULL,
+            preco_mensal    NUMERIC(10,2) NOT NULL,
+            limite_clientes INT NOT NULL,
+            self_serve      BOOLEAN NOT NULL DEFAULT TRUE,
+            features        JSONB NOT NULL DEFAULT '{}',
+            criado_em       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `.catch(() => {});
+
+        // Seed: 3 planos do catálogo (idempotente)
+        await sql`
+          INSERT INTO planos_catalogo (slug, nome, preco_mensal, limite_clientes, self_serve, features)
+          VALUES (
+            'starter', 'Starter', 69.00, 150, true,
+            '{"relatorio_periodico":false,"cupons_reativacao":false,"alertas_automaticos":false,"exportacao_pdf_excel":false,"painel_central_rede":false,"suporte_tipo":"chat"}'::jsonb
+          ) ON CONFLICT (slug) DO NOTHING
+        `.catch(() => {});
+        await sql`
+          INSERT INTO planos_catalogo (slug, nome, preco_mensal, limite_clientes, self_serve, features)
+          VALUES (
+            'pro', 'Pro', 129.00, 500, true,
+            '{"relatorio_periodico":true,"cupons_reativacao":true,"alertas_automaticos":true,"exportacao_pdf_excel":true,"painel_central_rede":false,"suporte_tipo":"prioritario"}'::jsonb
+          ) ON CONFLICT (slug) DO NOTHING
+        `.catch(() => {});
+        await sql`
+          INSERT INTO planos_catalogo (slug, nome, preco_mensal, limite_clientes, self_serve, features)
+          VALUES (
+            'rede', 'Rede', 89.00, 500, false,
+            '{"relatorio_periodico":true,"cupons_reativacao":true,"alertas_automaticos":true,"exportacao_pdf_excel":true,"painel_central_rede":true,"suporte_tipo":"gerente_dedicado","descricao":"Mínimo 5 unidades — preço por unidade/mês."}'::jsonb
+          ) ON CONFLICT (slug) DO NOTHING
+        `.catch(() => {});
+
+        // Coluna plano_slug em lojas (FK para o catálogo — nullable, lojas existentes ficam NULL)
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS plano_slug TEXT REFERENCES planos_catalogo(slug)`.catch(() => {});
+        // Downgrade pendente: aplicado no próximo vencimento pelo cron diário
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS plano_pendente_slug TEXT REFERENCES planos_catalogo(slug)`.catch(() => {});
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS plano_pendente_efetiva_em DATE`.catch(() => {});
+
         return sql;
       },
     },

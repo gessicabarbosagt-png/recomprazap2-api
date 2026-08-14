@@ -22,6 +22,7 @@ class CriarLojaDto {
 
 class AtualizarLojaDto {
   @IsOptional() @IsString() plano?: string;
+  @IsOptional() @IsString() planoSlug?: string | null;
   @IsOptional() @IsIn(['ativa', 'inadimplente', 'cancelada']) statusAssinatura?: string;
   @IsOptional() @IsNumber() @Type(() => Number) valorMensalidade?: number | null;
   @IsOptional() @IsString() proximoVencimento?: string | null;

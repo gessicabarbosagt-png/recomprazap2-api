@@ -105,7 +105,7 @@ export class AdminService {
   async detalharLoja(id: string) {
     const [loja] = await this.sql`
       SELECT
-        id, nome, email, slug, ativa, plano,
+        id, nome, email, slug, ativa, plano, plano_slug,
         status_assinatura, valor_mensalidade, proximo_vencimento,
         wa_status, wa_atualizado_em, horario_abertura, horario_fechamento,
         retry_automatico, horas_para_retry, created_at
@@ -176,6 +176,7 @@ export class AdminService {
   // ----------------------------------------------------------------
   async atualizarLoja(id: string, dto: {
     plano?: string;
+    planoSlug?: string | null;
     statusAssinatura?: string;
     valorMensalidade?: number | null;
     proximoVencimento?: string | null;
@@ -184,12 +185,13 @@ export class AdminService {
       UPDATE lojas
       SET
         plano               = COALESCE(${dto.plano ?? null}, plano),
+        plano_slug          = ${dto.planoSlug !== undefined ? (dto.planoSlug || null) : this.sql`plano_slug`},
         status_assinatura   = COALESCE(${dto.statusAssinatura ?? null}, status_assinatura),
         valor_mensalidade   = ${dto.valorMensalidade !== undefined ? dto.valorMensalidade : this.sql`valor_mensalidade`},
         proximo_vencimento  = ${dto.proximoVencimento !== undefined ? dto.proximoVencimento : this.sql`proximo_vencimento`},
         updated_at          = NOW()
       WHERE id = ${id} AND deleted_at IS NULL
-      RETURNING id, nome, plano, status_assinatura, valor_mensalidade, proximo_vencimento
+      RETURNING id, nome, plano, plano_slug, status_assinatura, valor_mensalidade, proximo_vencimento
     `;
     if (!atualizado) throw new NotFoundException('Loja não encontrada');
     return atualizado;
