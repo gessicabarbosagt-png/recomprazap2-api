@@ -328,6 +328,19 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
         await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS plano_pendente_slug TEXT REFERENCES planos_catalogo(slug)`.catch(() => {});
         await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS plano_pendente_efetiva_em DATE`.catch(() => {});
 
+        // Limpeza pontual: atribui plano_slug a todas as lojas que ainda têm NULL.
+        // Lógica: se valor_mensalidade bate exatamente com o preço de algum plano do catálogo,
+        // usa esse slug; caso contrário, atribui 'pro' como padrão.
+        await sql`
+          UPDATE lojas l
+          SET plano_slug = COALESCE(
+            (SELECT pc.slug FROM planos_catalogo pc
+             WHERE pc.preco_mensal = l.valor_mensalidade LIMIT 1),
+            'pro'
+          )
+          WHERE l.plano_slug IS NULL AND l.deleted_at IS NULL
+        `.catch(() => {});
+
         return sql;
       },
     },
