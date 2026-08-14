@@ -97,6 +97,16 @@ export class PedidosController {
     return this.pedidosService.atualizar(id, dto, usuario.lojaId);
   }
 
+  // PATCH /api/v1/pedidos/:id/valor
+  @Patch(':id/valor')
+  atualizarValor(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body('valor') valor: number,
+    @UsuarioAtual() usuario: any,
+  ) {
+    return this.pedidosService.atualizarValor(id, usuario.lojaId, Number(valor));
+  }
+
   // PATCH /api/v1/pedidos/:id/jornada
   @Patch(':id/jornada')
   atualizarJornada(

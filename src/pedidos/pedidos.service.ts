@@ -347,6 +347,17 @@ export class PedidosService {
     return resumo;
   }
 
+  async atualizarValor(id: string, lojaId: string, valor: number) {
+    if (isNaN(valor) || valor < 0) throw new BadRequestException('Valor inválido');
+    const [atualizado] = await this.sql`
+      UPDATE pedidos SET valor = ${valor}, updated_at = NOW()
+      WHERE id = ${id} AND loja_id = ${lojaId} AND deleted_at IS NULL
+      RETURNING id, valor
+    `;
+    if (!atualizado) throw new NotFoundException('Pedido não encontrado');
+    return atualizado;
+  }
+
   async resumoJornada(lojaId: string, diasAtras?: number, desde?: string, ate?: string) {
     // total_pedidos: pedidos criados no período (created_at)
     // total_compras / receita: vendas CONFIRMADAS no período (confirmado_em) — critério correto
