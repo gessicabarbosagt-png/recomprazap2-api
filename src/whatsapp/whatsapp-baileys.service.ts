@@ -82,6 +82,7 @@ interface LojaSession {
   msgsRecebidas: number;
   msgsIgnoradas: number;
   ultimaMsgEm: string | null;
+  ultimaMsgIndividualEm: string | null;
   lidToPhone: Map<string, string>;
   pendingSendJids: Map<string, string>;
 }
@@ -105,12 +106,32 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`[Baileys] FALHA ao iniciar sessão para loja ${loja.id}: ${err?.message ?? err}`);
       });
     }
+
+    // Health check a cada 3 minutos: detecta sockets cujo WebSocket foi fechado
+    // silenciosamente enquanto o status ainda aparece como 'conectado'
+    setInterval(() => this._verificarSaudeConexoes(), 3 * 60 * 1000);
   }
 
   async onModuleDestroy() {
     for (const session of this.sessions.values()) {
       session.reconectando = false;
       session.socket?.end(undefined);
+    }
+  }
+
+  private _verificarSaudeConexoes() {
+    for (const [lojaId, session] of this.sessions) {
+      if (session.status !== 'conectado' || !session.socket) continue;
+
+      // readyState: 0=CONNECTING 1=OPEN 2=CLOSING 3=CLOSED
+      const wsState: number | undefined = session.socket.ws?.readyState;
+      if (wsState !== undefined && wsState !== 1) {
+        this.diag(session, `[HEALTH] WebSocket readyState=${wsState} mas status=conectado — reiniciando sessão`);
+        session.reconectando = false;
+        this.iniciarSessao(lojaId).catch((err: any) =>
+          this.diag(session, `[HEALTH] erro ao reiniciar: ${err?.message}`),
+        );
+      }
     }
   }
 
@@ -130,6 +151,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         msgsRecebidas: 0,
         msgsIgnoradas: 0,
         ultimaMsgEm: null,
+        ultimaMsgIndividualEm: null,
         lidToPhone: new Map(),
         pendingSendJids: new Map(),
       });
@@ -270,6 +292,18 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
   private async iniciarSessao(lojaId: string) {
     const session = this.ensureSession(lojaId);
+
+    // Remove listeners do socket anterior ANTES de criar o novo. Sem isso, o
+    // connection=close que o WA envia ao socket antigo (quando o novo assume)
+    // dispara outro iniciarSessao em cascata, corrompendo o auth state via
+    // gravações concorrentes de saveCreds.
+    const socketAntigo = session.socket;
+    if (socketAntigo) {
+      socketAntigo.ev.removeAllListeners();
+      session.socket = null;
+      socketAntigo.end(undefined);
+    }
+
     session.reconectando = false;
 
     try {
@@ -441,6 +475,10 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           if (!hasMsg) {
             session.msgsIgnoradas++;
             continue;
+          }
+
+          if (jid.endsWith('@s.whatsapp.net')) {
+            session.ultimaMsgIndividualEm = new Date().toISOString();
           }
 
           await this.processarMensagemRecebida(msg, session).catch((err: any) =>
@@ -1273,6 +1311,8 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       msgsRecebidas: session?.msgsRecebidas ?? 0,
       msgsIgnoradas: session?.msgsIgnoradas ?? 0,
       ultimaMsgEm: session?.ultimaMsgEm ?? null,
+      ultimaMsgIndividualEm: session?.ultimaMsgIndividualEm ?? null,
+      wsReadyState: session?.socket?.ws?.readyState ?? null,
       logs: session ? [...session.diagLogs] : [],
     };
   }
