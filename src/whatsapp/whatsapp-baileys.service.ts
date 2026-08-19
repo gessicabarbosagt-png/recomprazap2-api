@@ -1410,8 +1410,15 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`[Baileys] reconectar() chamado para loja ${lojaId}`);
     const session = this.ensureSession(lojaId);
     session.reconectando = true;
-    session.socket?.end(undefined);
-    session.socket = null;
+
+    // Remove listeners ANTES de end() para que eventos atrasados do socket antigo
+    // (ex: connection=close tardio do servidor WA) não disparem outro iniciarSessao.
+    if (session.socket) {
+      session.socket.ev.removeAllListeners();
+      session.socket.end(undefined);
+      session.socket = null;
+    }
+
     session.qrAtual = null;
     session.status = 'desconectado';
     // Apaga apenas o auth state desta loja (prefixado com lojaId)
