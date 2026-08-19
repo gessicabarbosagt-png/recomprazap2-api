@@ -78,6 +78,7 @@ interface LojaSession {
   status: StatusConexao;
   qrAtual: string | null;
   reconectando: boolean;
+  sessaoSeq: number;
   diagLogs: string[];
   msgsRecebidas: number;
   msgsIgnoradas: number;
@@ -107,9 +108,15 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
-    // Health check a cada 3 minutos: detecta sockets cujo WebSocket foi fechado
-    // silenciosamente enquanto o status ainda aparece como 'conectado'
+    // Health check a cada 3 minutos: detecta WebSocket fechado silenciosamente
     setInterval(() => this._verificarSaudeConexoes(), 3 * 60 * 1000);
+
+    // Segunda camada a cada 1 hora: detecta phantom connection (WS open mas sem msgs individuais)
+    // Aguarda 30 min após startup antes da primeira verificação para não disparar falso positivo
+    setTimeout(() => {
+      this._verificarFalhaSilenciosa().catch(() => {});
+      setInterval(() => this._verificarFalhaSilenciosa().catch(() => {}), 60 * 60 * 1000);
+    }, 30 * 60 * 1000);
   }
 
   async onModuleDestroy() {
@@ -135,6 +142,50 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async _verificarFalhaSilenciosa() {
+    // Identifica lojas que mostram conectado no DB mas não recebem msgs individuais há >6h
+    // Requer wa_ultima_msg_individual_em persistido + histórico de atividade (>=3 msgs recebidas em 30 dias)
+    const candidatos = await this.sql`
+      SELECT l.id, l.nome
+      FROM lojas l
+      WHERE l.ativa = TRUE
+        AND l.deleted_at IS NULL
+        AND l.wa_status = 'conectado'
+        AND l.wa_ultima_msg_individual_em IS NOT NULL
+        AND l.wa_ultima_msg_individual_em < NOW() - INTERVAL '6 hours'
+        AND (
+          SELECT COUNT(*) FROM mensagens_whatsapp m
+          WHERE m.loja_id = l.id
+            AND m.direcao = 'recebida'
+            AND m.created_at > NOW() - INTERVAL '30 days'
+        ) >= 3
+    `.catch(() => [] as any[]);
+
+    for (const loja of candidatos) {
+      this.logger.warn(`[HEALTH] possível falha silenciosa detectada para loja ${loja.id} (${loja.nome})`);
+      await this.sql`
+        INSERT INTO notificacoes_admin (loja_id, mensagem, tipo)
+        VALUES (
+          ${loja.id},
+          'Possível falha silenciosa no inbox: WhatsApp aparece conectado mas pode não estar recebendo mensagens individuais. Acesse Configurações e reconecte via QR se necessário.',
+          'falha_silenciosa_inbox'
+        )
+        ON CONFLICT DO NOTHING
+      `.catch(() => {});
+    }
+
+    // Também verifica sessões em memória (captura lojas sem wa_ultima_msg_individual_em ainda)
+    for (const [, session] of this.sessions) {
+      if (session.status !== 'conectado') continue;
+      if (!session.ultimaMsgIndividualEm) continue;
+      const seisHoras = 6 * 60 * 60 * 1000;
+      const semMsgHa = Date.now() - new Date(session.ultimaMsgIndividualEm).getTime();
+      if (semMsgHa > seisHoras) {
+        this.diag(session, `[HEALTH] sem msgs individuais há ${Math.round(semMsgHa / 3600000)}h — possível falha silenciosa`);
+      }
+    }
+  }
+
   // ----------------------------------------------------------------
   // Gerenciamento de sessões
   // ----------------------------------------------------------------
@@ -147,6 +198,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         status: 'desconectado',
         qrAtual: null,
         reconectando: false,
+        sessaoSeq: 0,
         diagLogs: [],
         msgsRecebidas: 0,
         msgsIgnoradas: 0,
@@ -293,6 +345,11 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   private async iniciarSessao(lojaId: string) {
     const session = this.ensureSession(lojaId);
 
+    // Incrementa o número de sequência ANTES de qualquer coisa: qualquer saveCreds
+    // ainda em voo de uma sessão anterior vai detectar que sua seq está desatualizada
+    // e descartar a escrita — fechando a race condition residual de saveCreds concorrentes.
+    const meSeq = ++session.sessaoSeq;
+
     // Remove listeners do socket anterior ANTES de criar o novo. Sem isso, o
     // connection=close que o WA envia ao socket antigo (quando o novo assume)
     // dispara outro iniciarSessao em cascata, corrompendo o auth state via
@@ -307,8 +364,17 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     session.reconectando = false;
 
     try {
-      this.diag(session, `[Baileys] carregando auth state para loja ${lojaId}…`);
-      const { state, saveCreds } = await useDatabaseAuthState(this.sql, lojaId);
+      this.diag(session, `[Baileys] carregando auth state para loja ${lojaId}… (seq=${meSeq})`);
+      const { state, saveCreds: _saveCreds } = await useDatabaseAuthState(this.sql, lojaId);
+
+      // Guarda com verificação de seq: descarta escrita se outra sessão mais recente já tomou o controle
+      const saveCreds = async () => {
+        if (session.sessaoSeq !== meSeq) {
+          this.diag(session, `[Baileys] saveCreds descartado (seq desatualizada: minha=${meSeq} atual=${session.sessaoSeq})`);
+          return;
+        }
+        return _saveCreds();
+      };
       this.diag(session, '[Baileys] auth state carregado');
 
       let version: number[];
@@ -478,7 +544,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           }
 
           if (jid.endsWith('@s.whatsapp.net')) {
-            session.ultimaMsgIndividualEm = new Date().toISOString();
+            const agora = new Date().toISOString();
+            session.ultimaMsgIndividualEm = agora;
+            this.sql`UPDATE lojas SET wa_ultima_msg_individual_em = NOW() WHERE id = ${session.lojaId}`.catch(() => {});
           }
 
           await this.processarMensagemRecebida(msg, session).catch((err: any) =>

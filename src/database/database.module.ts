@@ -328,6 +328,11 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
           ) ON CONFLICT (slug) DO NOTHING
         `.catch(() => {});
 
+        // Rastreia horário da última mensagem individual recebida — persiste entre restartes
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS wa_ultima_msg_individual_em TIMESTAMPTZ`.catch(() => {});
+        // Tipo de notificação para diferenciar alerta de falha silenciosa de desconexão comum
+        await sql`ALTER TABLE notificacoes_admin ADD COLUMN IF NOT EXISTS tipo TEXT`.catch(() => {});
+
         // Coluna plano_slug em lojas (FK para o catálogo — nullable, lojas existentes ficam NULL)
         await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS plano_slug TEXT REFERENCES planos_catalogo(slug)`.catch(() => {});
         // Downgrade pendente: aplicado no próximo vencimento pelo cron diário
