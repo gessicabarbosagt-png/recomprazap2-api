@@ -208,6 +208,12 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
         await sql`ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS etapa_id UUID REFERENCES etapas_jornada(id)`.catch(() => {});
         await sql`ALTER TABLE lembretes ADD COLUMN IF NOT EXISTS represado BOOLEAN NOT NULL DEFAULT FALSE`.catch(() => {});
 
+        // ---- Lembrete Personalizado: adiamento a pedido do cliente ----
+        await sql`ALTER TABLE ciclos_recompra ADD COLUMN IF NOT EXISTS adiado_pelo_cliente BOOLEAN NOT NULL DEFAULT FALSE`.catch(() => {});
+        await sql`ALTER TABLE ciclos_recompra ADD COLUMN IF NOT EXISTS data_original_disparo TIMESTAMPTZ`.catch(() => {});
+        await sql`ALTER TABLE ciclos_recompra ADD COLUMN IF NOT EXISTS prazo_solicitado_dias INTEGER`.catch(() => {});
+        await sql`ALTER TABLE ciclos_recompra ADD COLUMN IF NOT EXISTS precisa_revisao BOOLEAN NOT NULL DEFAULT FALSE`.catch(() => {});
+
         // ---- Notificações do admin para lojas ----
         await sql`
           CREATE TABLE IF NOT EXISTS notificacoes_admin (

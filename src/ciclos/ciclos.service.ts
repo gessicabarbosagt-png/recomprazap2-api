@@ -178,6 +178,65 @@ export class CiclosService {
     return atualizado;
   }
 
+  // Lista ciclos adiados a pedido do cliente
+  async listarAdiados(lojaId: string) {
+    return this.sql`
+      SELECT
+        cr.id,
+        cr.proxima_notificacao,
+        cr.data_original_disparo,
+        cr.prazo_solicitado_dias,
+        cr.precisa_revisao,
+        cr.ativo,
+        c.id        AS cliente_id,
+        c.nome      AS cliente_nome,
+        c.telefone  AS cliente_telefone,
+        p.nome      AS produto_nome
+      FROM ciclos_recompra cr
+      JOIN clientes c ON c.id = cr.cliente_id
+      JOIN produtos  p ON p.id = cr.produto_id
+      WHERE cr.loja_id = ${lojaId}
+        AND cr.adiado_pelo_cliente = TRUE
+        AND cr.deleted_at IS NULL
+      ORDER BY cr.proxima_notificacao ASC
+    `;
+  }
+
+  // Cancela o adiamento, voltando para a data original
+  async cancelarAdiamento(id: string, lojaId: string) {
+    const [ciclo] = await this.sql`
+      SELECT data_original_disparo FROM ciclos_recompra
+      WHERE id = ${id} AND loja_id = ${lojaId} AND deleted_at IS NULL AND adiado_pelo_cliente = TRUE
+    `;
+    if (!ciclo) throw new NotFoundException('Ciclo não encontrado ou não está adiado');
+
+    await this.sql`
+      UPDATE ciclos_recompra SET
+        proxima_notificacao   = COALESCE(${ciclo.dataOriginalDisparo}, proxima_notificacao),
+        adiado_pelo_cliente   = FALSE,
+        data_original_disparo = NULL,
+        prazo_solicitado_dias = NULL,
+        precisa_revisao       = FALSE,
+        updated_at            = NOW()
+      WHERE id = ${id} AND loja_id = ${lojaId}
+    `;
+  }
+
+  // Edita manualmente a data de disparo de um ciclo adiado
+  async editarDataAdiado(id: string, lojaId: string, novaData: Date) {
+    const [ciclo] = await this.sql`
+      SELECT id FROM ciclos_recompra WHERE id = ${id} AND loja_id = ${lojaId} AND deleted_at IS NULL
+    `;
+    if (!ciclo) throw new NotFoundException('Ciclo não encontrado');
+
+    await this.sql`
+      UPDATE ciclos_recompra SET
+        proxima_notificacao = ${novaData},
+        updated_at          = NOW()
+      WHERE id = ${id} AND loja_id = ${lojaId}
+    `;
+  }
+
   // Soft delete — desativa o ciclo sem apagar histórico
   async remover(id: string, lojaId: string) {
     await this.buscarPorId(id, lojaId);
@@ -222,7 +281,16 @@ export class CiclosService {
       });
 
       await this.sql`UPDATE lembretes SET status='enviado', enviado_em=NOW() WHERE id=${lembrete.id}`;
-      await this.sql`UPDATE ciclos_recompra SET status_ultimo_envio='sucesso', updated_at=NOW() WHERE id=${id} AND loja_id=${lojaId}`;
+      await this.sql`
+        UPDATE ciclos_recompra SET
+          status_ultimo_envio   = 'sucesso',
+          adiado_pelo_cliente   = FALSE,
+          data_original_disparo = NULL,
+          prazo_solicitado_dias = NULL,
+          precisa_revisao       = FALSE,
+          updated_at            = NOW()
+        WHERE id = ${id} AND loja_id = ${lojaId}
+      `;
 
       return { ok: true, status: 'sucesso' };
     } catch (err: any) {
@@ -273,7 +341,16 @@ export class CiclosService {
           lojaId,
         });
         await this.sql`UPDATE lembretes SET status='enviado', enviado_em=NOW() WHERE id=${lembrete.id}`;
-        await this.sql`UPDATE ciclos_recompra SET status_ultimo_envio='sucesso', updated_at=NOW() WHERE id=${ciclo.id}`;
+        await this.sql`
+          UPDATE ciclos_recompra SET
+            status_ultimo_envio   = 'sucesso',
+            adiado_pelo_cliente   = FALSE,
+            data_original_disparo = NULL,
+            prazo_solicitado_dias = NULL,
+            precisa_revisao       = FALSE,
+            updated_at            = NOW()
+          WHERE id = ${ciclo.id}
+        `;
       } catch (err: any) {
         this.logger.error(`Erro ao enviar lembrete para ciclo ${ciclo.id}`, err?.message);
         await this.sql`UPDATE ciclos_recompra SET status_ultimo_envio='erro', updated_at=NOW() WHERE id=${ciclo.id}`;

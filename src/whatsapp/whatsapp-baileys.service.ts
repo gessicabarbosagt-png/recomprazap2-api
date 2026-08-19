@@ -23,6 +23,28 @@ const {
   jidNormalizedUser,
 } = require('@whiskeysockets/baileys');
 
+// Detecta intenção de adiamento de lembrete na mensagem do cliente.
+// Retorna { dias, precisaRevisao } ou null se não houver padrão reconhecido.
+function detectarIntencaoAdiamento(texto: string): { dias: number; precisaRevisao: boolean } | null {
+  const norm = normalizarTexto(texto);
+
+  // Numérico: "X dias", "em X dias", "daqui a X dias", etc.
+  const numMatch = norm.match(/(\d+)\s+dias?/);
+  if (numMatch) return { dias: parseInt(numMatch[1], 10), precisaRevisao: false };
+
+  // Períodos nomeados
+  if (/amanha/.test(norm)) return { dias: 1, precisaRevisao: false };
+  if (/semana\s+que\s+vem|proxima\s+semana/.test(norm)) return { dias: 7, precisaRevisao: false };
+  if (/mes\s+que\s+vem|proximo\s+mes/.test(norm)) return { dias: 30, precisaRevisao: false };
+
+  // Vagos → assume 7 dias + marca para revisão do lojista
+  if (/agora\s+nao|nao\s+agora|(?:^|\s)depois(?:\s|$)|mais\s+tarde/.test(norm)) {
+    return { dias: 7, precisaRevisao: true };
+  }
+
+  return null;
+}
+
 const TIPOS_PROTOCOLO = new Set([
   'messageContextInfo',
   'protocolMessage',
@@ -605,6 +627,21 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (cliente) {
+      // Detecção de adiamento tem prioridade sobre o fluxo estruturado
+      if (texto) {
+        const intencao = detectarIntencaoAdiamento(texto);
+        if (intencao) {
+          this.diag(session, `[ADIAMENTO] padrão detectado em "${texto.slice(0, 60)}" → ${intencao.dias} dias revisao=${intencao.precisaRevisao}`);
+          const processado = await this.processarAdiamento(
+            cliente.id, lojaId, telefone, intencao.dias, intencao.precisaRevisao, session,
+          ).catch((e: any) => {
+            this.diag(session, `[ADIAMENTO] erro: ${e?.message}`);
+            return false;
+          });
+          if (processado) return;
+        }
+      }
+
       await this.processarComFluxo(cliente.id, cliente.lojaId, textoExibido || texto, telefone, session);
       if (texto) {
         await this.verificarGatilhoCompra(telefone, texto, cliente.lojaId).catch((e: any) =>
@@ -614,6 +651,96 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     } else if (/^[123]$/.test(texto.trim())) {
       await this.processarRespostaPorTelefone(texto.trim(), telefone, lojaId);
     }
+  }
+
+  // ----------------------------------------------------------------
+  // Lembrete Personalizado: adiamento a pedido do cliente
+  // ----------------------------------------------------------------
+
+  private async processarAdiamento(
+    clienteId: string,
+    lojaId: string,
+    telefone: string,
+    dias: number,
+    precisaRevisao: boolean,
+    session: LojaSession,
+  ): Promise<boolean> {
+    // Tenta encontrar o ciclo via sessão ativa (lembrete enviado recentemente)
+    let cicloId: string | null = null;
+
+    const [sessaoAtiva] = await this.sql`
+      SELECT lembrete_id FROM sessao_conversa
+      WHERE loja_id = ${lojaId} AND cliente_id = ${clienteId} AND expira_em > NOW()
+      ORDER BY created_at DESC LIMIT 1
+    `;
+    if (sessaoAtiva?.lembreteId) {
+      const [lembreteCiclo] = await this.sql`
+        SELECT ciclo_id FROM lembretes WHERE id = ${sessaoAtiva.lembreteId}
+      `;
+      cicloId = lembreteCiclo?.cicloId ?? null;
+    }
+
+    // Fallback: ciclo ativo mais próximo de disparar
+    if (!cicloId) {
+      const [cicloFallback] = await this.sql`
+        SELECT id FROM ciclos_recompra
+        WHERE cliente_id = ${clienteId} AND loja_id = ${lojaId}
+          AND ativo = TRUE AND deleted_at IS NULL
+        ORDER BY proxima_notificacao ASC NULLS LAST
+        LIMIT 1
+      `;
+      cicloId = cicloFallback?.id ?? null;
+    }
+
+    if (!cicloId) {
+      this.diag(session, `[ADIAMENTO] nenhum ciclo ativo para cliente=${clienteId} — ignorando`);
+      return false;
+    }
+
+    const [ciclo] = await this.sql`
+      SELECT proxima_notificacao, data_original_disparo FROM ciclos_recompra WHERE id = ${cicloId}
+    `;
+
+    // Preserva a data original na primeira vez que é adiado
+    const dataOriginal = ciclo?.dataOriginalDisparo ?? ciclo?.proximaNotificacao ?? new Date();
+    const novaData = new Date();
+    novaData.setDate(novaData.getDate() + dias);
+
+    await this.sql`
+      UPDATE ciclos_recompra SET
+        proxima_notificacao   = ${novaData},
+        adiado_pelo_cliente   = TRUE,
+        data_original_disparo = ${dataOriginal},
+        prazo_solicitado_dias = ${dias},
+        precisa_revisao       = ${precisaRevisao},
+        updated_at            = NOW()
+      WHERE id = ${cicloId}
+    `;
+
+    const dataFormatada = novaData.toLocaleDateString('pt-BR', {
+      day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'America/Sao_Paulo',
+    });
+
+    const confirmacao = `Certo! Vou te lembrar no dia ${dataFormatada}. Até lá!`;
+    const msgId = await this.enviarMensagem(telefone, confirmacao, lojaId).catch(() => null);
+    await this.registrarMensagem({
+      telefone, lojaId, direcao: 'enviada', conteudo: confirmacao,
+      whatsappMsgId: msgId || null, origem: 'sistema',
+    });
+
+    const [clienteRow] = await this.sql`SELECT nome FROM clientes WHERE id = ${clienteId}`;
+    const clienteNome = clienteRow?.nome ?? telefone;
+
+    const notifMsg = precisaRevisao
+      ? `${clienteNome} pediu para ser lembrado em ${dataFormatada} (${dias} dias, período estimado — revise se necessário). Ajustado automaticamente.`
+      : `${clienteNome} pediu para ser lembrado em ${dataFormatada} (${dias} dias). Ajustado automaticamente.`;
+
+    await this.sql`
+      INSERT INTO notificacoes_admin (loja_id, mensagem) VALUES (${lojaId}, ${notifMsg})
+    `.catch(() => {});
+
+    this.diag(session, `[ADIAMENTO] ciclo=${cicloId} → ${dataFormatada} (${dias}d) revisao=${precisaRevisao}`);
+    return true;
   }
 
   // ----------------------------------------------------------------

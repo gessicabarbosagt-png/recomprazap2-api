@@ -1,6 +1,6 @@
 import {
   Controller, UseGuards, Get, Post, Patch, Delete,
-  Param, Body, ParseUUIDPipe, HttpCode, HttpStatus,
+  Param, Body, ParseUUIDPipe, HttpCode, HttpStatus, BadRequestException,
 } from '@nestjs/common';
 import { CiclosService, CriarCicloDto, AtualizarCicloDto } from './ciclos.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -22,6 +22,12 @@ export class CiclosController {
   @HttpCode(HttpStatus.OK)
   dispararTodos(@UsuarioAtual() usuario: any) {
     return this.ciclosService.dispararTodos(usuario.lojaId);
+  }
+
+  // GET /api/v1/ciclos/adiados — deve vir antes de :id
+  @Get('adiados')
+  listarAdiados(@UsuarioAtual() usuario: any) {
+    return this.ciclosService.listarAdiados(usuario.lojaId);
   }
 
   // GET /api/v1/ciclos/:id
@@ -66,5 +72,28 @@ export class CiclosController {
     @UsuarioAtual() usuario: any,
   ) {
     return this.ciclosService.remover(id, usuario.lojaId);
+  }
+
+  // PATCH /api/v1/ciclos/:id/cancelar-adiamento
+  @Patch(':id/cancelar-adiamento')
+  @HttpCode(HttpStatus.OK)
+  cancelarAdiamento(
+    @Param('id', ParseUUIDPipe) id: string,
+    @UsuarioAtual() usuario: any,
+  ) {
+    return this.ciclosService.cancelarAdiamento(id, usuario.lojaId);
+  }
+
+  // PATCH /api/v1/ciclos/:id/data-adiamento
+  @Patch(':id/data-adiamento')
+  @HttpCode(HttpStatus.OK)
+  editarDataAdiado(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: { novaData: string },
+    @UsuarioAtual() usuario: any,
+  ) {
+    const data = new Date(body.novaData);
+    if (isNaN(data.getTime())) throw new BadRequestException('Data inválida');
+    return this.ciclosService.editarDataAdiado(id, usuario.lojaId, data);
   }
 }
