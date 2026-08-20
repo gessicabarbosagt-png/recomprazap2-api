@@ -74,7 +74,7 @@ export class WhatsappService {
       JOIN clientes c ON c.id = m.cliente_id
       WHERE m.loja_id    = ${lojaId}
         AND m.deleted_at IS NULL
-      ORDER BY m.created_at ASC
+      ORDER BY m.created_at DESC
       LIMIT 500
     `;
   }
