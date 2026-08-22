@@ -349,10 +349,42 @@ export class PedidosService {
 
   async atualizarValor(id: string, lojaId: string, valor: number) {
     if (isNaN(valor) || valor < 0) throw new BadRequestException('Valor inválido');
+
+    // Busca o pedido atual para saber se já está em 'comprou'
+    const [pedidoAtual] = await this.sql`
+      SELECT id, status_jornada FROM pedidos
+      WHERE id = ${id} AND loja_id = ${lojaId} AND deleted_at IS NULL
+    `;
+    if (!pedidoAtual) throw new NotFoundException('Pedido não encontrado');
+
+    // Se ainda não é 'comprou', move para a etapa final_comprou e seta confirmado_em.
+    // Informar valor significa confirmar a venda — sem isso o pedido não aparece no dashboard.
+    if (pedidoAtual.status_jornada !== 'comprou') {
+      const [etapaComprou] = await this.sql`
+        SELECT id FROM etapas_jornada
+        WHERE loja_id = ${lojaId} AND tipo = 'final_comprou'
+        LIMIT 1
+      `;
+      const [atualizado] = await this.sql`
+        UPDATE pedidos SET
+          valor          = ${valor},
+          etapa_id       = ${etapaComprou?.id ?? pedidoAtual.etapa_id ?? null},
+          status_jornada = 'comprou',
+          confirmado_em  = NOW(),
+          confirmado_por = 'manual',
+          updated_at     = NOW()
+        WHERE id = ${id} AND loja_id = ${lojaId} AND deleted_at IS NULL
+        RETURNING id, valor, status_jornada, confirmado_em
+      `;
+      if (!atualizado) throw new NotFoundException('Pedido não encontrado');
+      return atualizado;
+    }
+
+    // Já estava em 'comprou': só atualiza o valor (confirmado_em preservado)
     const [atualizado] = await this.sql`
       UPDATE pedidos SET valor = ${valor}, updated_at = NOW()
       WHERE id = ${id} AND loja_id = ${lojaId} AND deleted_at IS NULL
-      RETURNING id, valor
+      RETURNING id, valor, status_jornada, confirmado_em
     `;
     if (!atualizado) throw new NotFoundException('Pedido não encontrado');
     return atualizado;
