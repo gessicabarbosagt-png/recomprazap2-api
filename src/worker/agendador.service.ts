@@ -6,6 +6,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { DATABASE_CLIENT } from '../database/database.module';
 import { PagamentosService } from '../pagamentos/pagamentos.service';
 import { PlanosService } from '../planos/planos.service';
+import { EmailService } from '../email/email.service';
 import {
   FILA_LEMBRETES,
   FILA_RETRY,
@@ -24,6 +25,7 @@ export class AgendadorService implements OnApplicationBootstrap {
     @InjectQueue(FILA_RETRY) private readonly filaRetry: Queue,
     private readonly pagamentosService: PagamentosService,
     private readonly planosService: PlanosService,
+    private readonly emailService: EmailService,
   ) {}
 
   // Cancela lembretes presos como 'agendado' há mais de 4 horas.
@@ -217,6 +219,97 @@ export class AgendadorService implements OnApplicationBootstrap {
     );
 
     this.logger.log(`Job agendado: lembrete ${lembrete.id} para ${ciclo.clienteNome}`);
+  }
+
+  // ----------------------------------------------------------------
+  // CRON RESUMO DIÁRIO — 8h e 20h BRT (11h e 23h UTC)
+  // Envia e-mail de saúde do sistema ao admin.
+  // ----------------------------------------------------------------
+  @Cron('0 11 * * *')
+  async resumoDiario8h() {
+    this.logger.log('[Cron] Resumo diário 8h BRT...');
+    await this.enviarResumoDiario('Resumo 8h BRT').catch((e: any) =>
+      this.logger.warn(`[Cron] erro no resumo 8h: ${e?.message}`),
+    );
+  }
+
+  @Cron('0 23 * * *')
+  async resumoDiario20h() {
+    this.logger.log('[Cron] Resumo diário 20h BRT...');
+    await this.enviarResumoDiario('Resumo 20h BRT').catch((e: any) =>
+      this.logger.warn(`[Cron] erro no resumo 20h: ${e?.message}`),
+    );
+  }
+
+  private async enviarResumoDiario(periodo: string) {
+    const [lojaStats] = await this.sql`
+      SELECT
+        COUNT(*) FILTER (WHERE ativa = TRUE AND deleted_at IS NULL) AS total_ativas
+      FROM lojas
+    `;
+
+    const falhaSilenciosa = await this.sql`
+      SELECT l.id, l.nome
+      FROM lojas l
+      WHERE l.ativa = TRUE AND l.deleted_at IS NULL AND l.wa_status = 'conectado'
+        AND l.wa_ultima_msg_individual_em IS NOT NULL
+        AND l.wa_ultima_msg_individual_em < NOW() - INTERVAL '6 hours'
+        AND (
+          SELECT COUNT(*) FROM mensagens_whatsapp m
+          WHERE m.loja_id = l.id AND m.direcao = 'recebida'
+            AND m.created_at > NOW() - INTERVAL '30 days'
+        ) >= 3
+    `.catch(() => [] as any[]);
+
+    const desconectadas = await this.sql`
+      SELECT id, nome, wa_status
+      FROM lojas
+      WHERE ativa = TRUE AND deleted_at IS NULL AND wa_status != 'conectado'
+      ORDER BY nome
+    `.catch(() => [] as any[]);
+
+    const inadimplentes = await this.sql`
+      SELECT id, nome, status_assinatura
+      FROM lojas
+      WHERE ativa = TRUE AND deleted_at IS NULL
+        AND status_assinatura IN ('inadimplente', 'suspensa')
+      ORDER BY nome
+    `.catch(() => [] as any[]);
+
+    const [lembreteStats] = await this.sql`
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'enviado' AND enviado_em >= NOW() - INTERVAL '12 hours') AS lembretes_enviados,
+        COUNT(*) FILTER (WHERE status = 'falha') AS lembretes_represados
+      FROM lembretes
+    `.catch(() => [{ lembretesEnviados: 0, lembretesRepresados: 0 }]);
+
+    const [pedidoStats] = await this.sql`
+      SELECT
+        COUNT(*) FILTER (WHERE status_jornada = 'comprou' AND confirmado_em >= NOW() - INTERVAL '12 hours') AS vendas_confirmadas,
+        COALESCE(SUM(valor) FILTER (WHERE status_jornada = 'comprou' AND confirmado_em >= NOW() - INTERVAL '12 hours'), 0) AS receita_confirmada,
+        COUNT(*) FILTER (WHERE status_jornada = 'comprou' AND valor IS NULL) AS vendas_sem_valor
+      FROM pedidos
+      WHERE deleted_at IS NULL
+    `.catch(() => [{ vendasConfirmadas: 0, receitaConfirmada: 0, vendasSemValor: 0 }]);
+
+    const [leadStats] = await this.sql`
+      SELECT COUNT(*) AS novos_leads
+      FROM clientes
+      WHERE created_at >= NOW() - INTERVAL '12 hours' AND deleted_at IS NULL
+    `.catch(() => [{ novosLeads: 0 }]);
+
+    await this.emailService.enviarResumoDiario({
+      falhaSilenciosa,
+      desconectadas,
+      inadimplentes,
+      lembretesRepresados: Number(lembreteStats?.lembretesRepresados ?? 0),
+      vendasSemValor:      Number(pedidoStats?.vendasSemValor ?? 0),
+      totalAtivas:         Number(lojaStats?.totalAtivas ?? 0),
+      lembretesEnviados:   Number(lembreteStats?.lembretesEnviados ?? 0),
+      vendasConfirmadas:   Number(pedidoStats?.vendasConfirmadas ?? 0),
+      receitaConfirmada:   Number(pedidoStats?.receitaConfirmada ?? 0),
+      novosLeads:          Number(leadStats?.novosLeads ?? 0),
+    }, periodo);
   }
 
   // ----------------------------------------------------------------

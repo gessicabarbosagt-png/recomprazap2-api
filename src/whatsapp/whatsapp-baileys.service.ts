@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { DATABASE_CLIENT } from '../database/database.module';
 import { MetaAdsService } from '../meta-ads/meta-ads.service';
+import { EmailService } from '../email/email.service';
 import { useDatabaseAuthState } from './baileys-auth-state';
 import {
   normalizarResposta,
@@ -99,6 +100,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
     private readonly metaAdsService: MetaAdsService,
+    private readonly emailService: EmailService,
   ) {}
 
   // Inicia sessões para todas as lojas ativas ao subir o serviço
@@ -178,6 +180,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         )
         ON CONFLICT DO NOTHING
       `.catch(() => {});
+      this.emailService.enviarAlertaFalhaSilenciosa(loja.id, loja.nome).catch(() => {});
     }
 
     // Também verifica sessões em memória (captura lojas sem wa_ultima_msg_individual_em ainda)
@@ -455,9 +458,16 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         }
 
         if (connection === 'close') {
+          const eraConectado = session.status === 'conectado';
           session.status = 'desconectado';
           session.qrAtual = null;
           this.sql`UPDATE lojas SET wa_status = 'desconectado', wa_atualizado_em = NOW() WHERE id = ${lojaId}`.catch(() => {});
+
+          if (eraConectado) {
+            this.sql`SELECT nome FROM lojas WHERE id = ${lojaId} LIMIT 1`
+              .then(([l]: any[]) => this.emailService.enviarAlertaDesconexao(lojaId, l?.nome ?? lojaId))
+              .catch(() => {});
+          }
 
           const statusCode = lastDisconnect?.error?.output?.statusCode;
           const errorMsg = lastDisconnect?.error?.message ?? '';

@@ -20,10 +20,12 @@ import { PagamentosModule } from './pagamentos/pagamentos.module';
 import { MetaAdsModule } from './meta-ads/meta-ads.module';
 import { LinksOrigemModule } from './links-origem/links-origem.module';
 import { PlanosModule } from './planos/planos.module';
+import { EmailModule } from './email/email.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    EmailModule,
     DatabaseModule,
 
     // Módulos de negócio

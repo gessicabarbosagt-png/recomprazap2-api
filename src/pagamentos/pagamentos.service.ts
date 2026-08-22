@@ -4,6 +4,7 @@ import { DATABASE_CLIENT } from '../database/database.module';
 import axios from 'axios';
 import { createHmac } from 'crypto';
 import { Resend } from 'resend';
+import { EmailService } from '../email/email.service';
 
 @Injectable()
 export class PagamentosService {
@@ -13,6 +14,7 @@ export class PagamentosService {
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
     private readonly config: ConfigService,
+    private readonly emailService: EmailService,
   ) {}
 
   private get accessToken(): string {
@@ -302,7 +304,7 @@ export class PagamentosService {
     const mpPaymentId   = String(data.id);
 
     const [loja] = await this.sql`
-      SELECT id, email, status_assinatura FROM lojas
+      SELECT id, nome, email, status_assinatura FROM lojas
       WHERE mp_subscription_id = ${preapprovalId} AND deleted_at IS NULL
     `;
     if (!loja) {
@@ -334,6 +336,7 @@ export class PagamentosService {
         `;
         await this.criarNotificacaoInadimplente(loja.id);
         await this.enviarEmailInadimplente(loja.email, loja.id);
+        this.emailService.enviarAlertaPagamentoRecusado(loja.id, loja.nome ?? loja.id, loja.email).catch(() => {});
         this.logger.log(`[MP Webhook] loja ${loja.id} marcada inadimplente`);
       }
     }
