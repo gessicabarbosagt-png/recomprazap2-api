@@ -21,6 +21,7 @@ const {
   fetchLatestBaileysVersion,
   Browsers,
   jidNormalizedUser,
+  generateMessageID,
 } = require('@whiskeysockets/baileys');
 
 // Detecta intenção de adiamento de lembrete na mensagem do cliente.
@@ -93,6 +94,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WhatsappBaileysService.name);
   private readonly sessions = new Map<string, LojaSession>();
   private readonly iniciando = new Set<string>();
+  private readonly iniciandoSessao = new Set<string>();
 
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
@@ -134,6 +136,10 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       const wsState: number | undefined = session.socket.ws?.readyState;
       if (wsState !== undefined && wsState !== 1) {
         this.diag(session, `[HEALTH] WebSocket readyState=${wsState} mas status=conectado — reiniciando sessão`);
+        if (this.iniciandoSessao.has(lojaId)) {
+          this.diag(session, `[HEALTH] iniciarSessao já em andamento — health check ignorado`);
+          continue;
+        }
         session.reconectando = false;
         this.iniciarSessao(lojaId).catch((err: any) =>
           this.diag(session, `[HEALTH] erro ao reiniciar: ${err?.message}`),
@@ -343,6 +349,16 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   // ----------------------------------------------------------------
 
   private async iniciarSessao(lojaId: string) {
+    // Previne reentrada concorrente em todos os caminhos de chamada (reconexão automática,
+    // health check, getQrCode). Sem este lock, dois iniciarSessao simultâneos criam sockets
+    // paralelos: o WA derruba um deles, o close handler do socket derrubado agenda mais um
+    // iniciarSessao, gerando o ciclo de reconexão infinita que resulta em phantom connection.
+    if (this.iniciandoSessao.has(lojaId)) {
+      this.diag(this.ensureSession(lojaId), `[Baileys] iniciarSessao já em andamento para ${lojaId} — chamada ignorada`);
+      return;
+    }
+    this.iniciandoSessao.add(lojaId);
+
     const session = this.ensureSession(lojaId);
 
     // Incrementa o número de sequência ANTES de qualquer coisa: qualquer saveCreds
@@ -359,12 +375,13 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       socketAntigo.ev.removeAllListeners();
       session.socket = null;
       socketAntigo.end(undefined);
+      this.diag(session, `[Baileys] socket anterior encerrado (seq=${meSeq})`);
     }
 
     session.reconectando = false;
 
     try {
-      this.diag(session, `[Baileys] carregando auth state para loja ${lojaId}… (seq=${meSeq})`);
+      this.diag(session, `[Baileys] ▶ INIT seq=${meSeq} — carregando auth state`);
       const { state, saveCreds: _saveCreds } = await useDatabaseAuthState(this.sql, lojaId);
 
       // Guarda com verificação de seq: descarta escrita se outra sessão mais recente já tomou o controle
@@ -375,16 +392,16 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         }
         return _saveCreds();
       };
-      this.diag(session, '[Baileys] auth state carregado');
+      this.diag(session, `[Baileys] auth state carregado (seq=${meSeq})`);
 
       let version: number[];
       try {
         const result = await fetchLatestBaileysVersion();
         version = result.version;
-        this.diag(session, `[Baileys] versão obtida: ${version.join('.')}`);
+        this.diag(session, `[Baileys] versão obtida: ${version.join('.')} (seq=${meSeq})`);
       } catch (versionErr: any) {
         version = [2, 3000, 1023026504];
-        this.diag(session, `[Baileys] fetchLatestBaileysVersion falhou (${versionErr?.message}) — fallback ${version.join('.')}`);
+        this.diag(session, `[Baileys] fetchLatestBaileysVersion falhou (${versionErr?.message}) — fallback ${version.join('.')} (seq=${meSeq})`);
       }
 
       session.socket = makeWASocket({
@@ -395,54 +412,36 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         logger: LOGGER_SILENCIOSO,
         connectTimeoutMs: 60_000,
       });
-      console.log('[SOCKET CREATED]', new Date().toISOString(), `loja=${lojaId}`, 'user:', session.socket.user?.id);
-      this.diag(session, '[Baileys] socket criado — aguardando eventos de conexão');
+      console.log('[SOCKET CREATED]', new Date().toISOString(), `loja=${lojaId}`, `seq=${meSeq}`, 'user:', session.socket.user?.id);
+      this.diag(session, `[Baileys] socket criado (seq=${meSeq}) — registrando listeners`);
 
+      // IMPORTANTE: todos os listeners críticos são registrados SINCRONAMENTE aqui,
+      // antes de qualquer await subsequente. Isso elimina a janela onde eventos de
+      // connection.update ou messages.upsert chegariam sem handler registrado.
       session.socket.ev.on('creds.update', saveCreds);
 
-      // Carrega mapeamentos LID desta loja
-      const lidRows = await this.sql`SELECT lid, phone_jid FROM whatsapp_lid_map WHERE loja_id = ${lojaId}`;
-      for (const r of lidRows) {
-        session.lidToPhone.set(r.lid, r.phoneJid);
-      }
-      if (lidRows.length > 0 && session.socket?.signalRepository?.lidMapping) {
-        await session.socket.signalRepository.lidMapping
-          .storeLIDPNMappings(lidRows.map((r: any) => ({ lid: r.lid, pn: r.phoneJid })))
-          .catch(() => {});
-      }
-      this.diag(session, `[Baileys] LID map carregado: ${lidRows.length} entradas`);
-
-      const salvarLids = async (contacts: any[]) => {
-        let novos = 0;
-        for (const c of contacts) {
-          if (c.lid && c.id) {
-            await this.salvarMapeamentoLid(c.lid, c.id, session).catch(() => {});
-            novos++;
-          }
-        }
-        if (novos > 0 || contacts.length > 5) {
-          const semLid = contacts.filter((c: any) => c.id && !c.lid).length;
-          this.diag(session, `[Baileys] contacts sync: ${contacts.length} total, ${novos} com LID, ${semLid} sem LID`);
-        }
-      };
-      session.socket.ev.on('contacts.upsert', salvarLids);
-      session.socket.ev.on('contacts.update', salvarLids);
-
       session.socket.ev.on('connection.update', async (update: any) => {
+        // Ignora eventos de sockets supersedidos: se sessaoSeq avançou, este socket
+        // foi substituído por um mais recente. Não deve agendar reconexões.
+        if (session.sessaoSeq !== meSeq) {
+          this.diag(session, `[Baileys] connection.update ignorado — socket supersedido (minha seq=${meSeq}, atual=${session.sessaoSeq})`);
+          return;
+        }
+
         const { connection, lastDisconnect, qr } = update;
-        this.diag(session, `[Baileys] connection.update: connection=${connection ?? 'n/a'} qr=${qr ? 'SIM' : 'não'}`);
+        this.diag(session, `[Baileys] connection.update seq=${meSeq}: connection=${connection ?? 'n/a'} qr=${qr ? 'SIM' : 'não'}`);
 
         if (qr) {
           session.qrAtual = qr;
           session.status = 'aguardando';
-          this.diag(session, '[Baileys] QR Code gerado — aguardando escaneamento');
+          this.diag(session, `[Baileys] QR Code gerado (seq=${meSeq}) — aguardando escaneamento`);
         }
 
         if (connection === 'open') {
           session.status = 'conectado';
           session.qrAtual = null;
           session.reconectando = false;
-          this.diag(session, '[Baileys] ✅ WhatsApp conectado');
+          this.diag(session, `[Baileys] ✅ WhatsApp conectado (seq=${meSeq})`);
           const waNumero = session.socket.user?.id
             ? jidNormalizedUser(session.socket.user.id).replace('@s.whatsapp.net', '')
             : null;
@@ -464,17 +463,20 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           const errorMsg = lastDisconnect?.error?.message ?? '';
           const deslogado = statusCode === DisconnectReason.loggedOut;
 
-          this.diag(session, `[Baileys] conexão fechada — statusCode=${statusCode} deslogado=${deslogado} erro="${errorMsg}"`);
+          this.diag(session, `[Baileys] conexão fechada (seq=${meSeq}) — statusCode=${statusCode} deslogado=${deslogado} erro="${errorMsg}"`);
 
           if (deslogado) {
-            session.reconectando = false;
+            // Não zera reconectando antes do await: um segundo close durante o DELETE
+            // veria reconectando=false e agendaria outro iniciarSessao. O lock
+            // iniciandoSessao garante que apenas um init rode por vez.
             await this.sql`DELETE FROM baileys_auth_state WHERE id LIKE ${lojaId + ':%'}`.catch((e: any) =>
               this.diag(session, `[Baileys] erro ao limpar auth state: ${e?.message}`),
             );
+            this.diag(session, `[Baileys] auth state limpo — reiniciando em 3s (seq=${meSeq})`);
             setTimeout(() => this.iniciarSessao(lojaId), 3_000);
           } else if (!session.reconectando) {
             session.reconectando = true;
-            this.diag(session, '[Baileys] reconectando em 5s…');
+            this.diag(session, `[Baileys] reconectando em 5s… (seq=${meSeq})`);
             setTimeout(() => this.iniciarSessao(lojaId), 5_000);
           }
         }
@@ -482,9 +484,9 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
       session.socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
         for (const m of (messages ?? [])) {
-          console.log(`[RAW UPSERT loja=${lojaId.slice(0,8)}] type=${type} remoteJid=${m.key?.remoteJid} fromMe=${m.key?.fromMe} hasMessage=${!!m.message} messageStubType=${m.messageStubType ?? 'none'}`);
+          console.log(`[RAW UPSERT loja=${lojaId.slice(0,8)} seq=${meSeq}] type=${type} remoteJid=${m.key?.remoteJid} fromMe=${m.key?.fromMe} hasMessage=${!!m.message} messageStubType=${m.messageStubType ?? 'none'}`);
         }
-        this.diag(session, `[Baileys] messages.upsert: type=${type} count=${messages?.length ?? 0}`);
+        this.diag(session, `[Baileys] messages.upsert (seq=${meSeq}): type=${type} count=${messages?.length ?? 0}`);
 
         // Captura LID em ecos de envio
         for (const m of (messages ?? [])) {
@@ -555,9 +557,43 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         }
       });
 
+      this.diag(session, `[Baileys] listeners registrados (seq=${meSeq}) — carregando LID map`);
+
+      // Carrega mapeamentos LID desta loja (após listeners — socket já está protegido)
+      const lidRows = await this.sql`SELECT lid, phone_jid FROM whatsapp_lid_map WHERE loja_id = ${lojaId}`;
+      for (const r of lidRows) {
+        session.lidToPhone.set(r.lid, r.phoneJid);
+      }
+      if (lidRows.length > 0 && session.socket?.signalRepository?.lidMapping) {
+        await session.socket.signalRepository.lidMapping
+          .storeLIDPNMappings(lidRows.map((r: any) => ({ lid: r.lid, pn: r.phoneJid })))
+          .catch(() => {});
+      }
+      this.diag(session, `[Baileys] LID map carregado: ${lidRows.length} entradas (seq=${meSeq})`);
+
+      const salvarLids = async (contacts: any[]) => {
+        let novos = 0;
+        for (const c of contacts) {
+          if (c.lid && c.id) {
+            await this.salvarMapeamentoLid(c.lid, c.id, session).catch(() => {});
+            novos++;
+          }
+        }
+        if (novos > 0 || contacts.length > 5) {
+          const semLid = contacts.filter((c: any) => c.id && !c.lid).length;
+          this.diag(session, `[Baileys] contacts sync: ${contacts.length} total, ${novos} com LID, ${semLid} sem LID`);
+        }
+      };
+      session.socket.ev.on('contacts.upsert', salvarLids);
+      session.socket.ev.on('contacts.update', salvarLids);
+
+      this.diag(session, `[Baileys] ✔ INIT seq=${meSeq} completo — socket ativo`);
+
     } catch (err: any) {
-      this.diag(this.ensureSession(lojaId), `[Baileys] ERRO em iniciarSessao: ${err?.message ?? err}`);
+      this.diag(this.ensureSession(lojaId), `[Baileys] ERRO em iniciarSessao (seq=${meSeq}): ${err?.message ?? err}`);
       throw err;
+    } finally {
+      this.iniciandoSessao.delete(lojaId);
     }
   }
 
@@ -1067,9 +1103,11 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     let jid: string = msg.key.remoteJid ?? '';
 
     if (jid.endsWith('@lid')) {
+      // Tenta resolver via in-memory/DB; o fix de preMsgId em enviarMensagem garante que
+      // pendingSendJids[whatsappMsgId] já está populado quando o eco chega.
       const resolvido = await this.resolverLid(jid, session).catch(() => null);
       if (!resolvido) {
-        this.diag(session, `[Baileys] celular: LID ${jid} não resolvido — ignorando`);
+        this.diag(session, `[AVISO] eco celular: LID ${jid} não resolvido (msgId=${whatsappMsgId}) — eco NÃO salvo no inbox. pendingSendJids tem key=${session.pendingSendJids.has(whatsappMsgId)} lidToPhone tem key=${session.lidToPhone.has(jid)}`);
         return;
       }
       jid = resolvido;
@@ -1109,8 +1147,12 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       origem: 'celular',
     });
 
+    if (salvo === 0) {
+      this.diag(session, `[AVISO] eco celular: registrarMensagem=0 para ${telefone} msgId=${whatsappMsgId} — conflito de msgId (já salvo por enviarLembrete) ou cliente não encontrado`);
+    }
+
     if (salvo > 0) {
-      this.diag(session, `[Baileys] msg celular salva → ${telefone}: "${texto.slice(0, 60)}"`);
+      this.diag(session, `[Baileys] eco celular salvo → ${telefone}: "${texto.slice(0, 60)}"`);
       if (texto) {
         await this.verificarGatilhoCompra(telefone, texto, clienteCelular.lojaId).catch((e: any) =>
           this.diag(session, `[Baileys] erro em verificarGatilhoCompra: ${e?.message}`),
@@ -1292,10 +1334,15 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     });
 
     const msgId = await this.enviarMensagem(telefone, texto, lojaId);
-    await this.registrarMensagem({
+    const savedLembrete = await this.registrarMensagem({
       telefone, lojaId, direcao: 'enviada', conteudo: texto, lembreteId,
       whatsappMsgId: msgId || null, origem: 'sistema',
     });
+    if (savedLembrete === 0) {
+      const session = this.sessions.get(lojaId);
+      if (session) this.diag(session, `[AVISO] enviarLembrete: registrarMensagem retornou 0 — inbox não atualizado. telefone=${telefone} lojaId=${lojaId} lembreteId=${lembreteId} msgId=${msgId}`);
+      this.logger.warn(`[enviarLembrete] registrarMensagem=0 para telefone=${telefone} lojaId=${lojaId} — cliente não encontrado ou conflito de msgId`);
+    }
 
     const [cliente] = await this.sql`
       SELECT id FROM clientes
@@ -1325,7 +1372,15 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const numero = telefone.replace('+', '').replace(/\D/g, '');
     const jid = `${numero}@s.whatsapp.net`;
 
-    const enviado = await session.socket.sendMessage(jid, { text: texto });
+    // Pré-registra o JID em pendingSendJids ANTES do sendMessage para que o eco (@lid)
+    // que pode chegar durante o await já encontre o mapeamento pronto e seja salvo corretamente.
+    // Passamos o preMsgId explicitamente ao Baileys; ele usará esse ID no eco.
+    const preMsgId: string = typeof generateMessageID === 'function'
+      ? generateMessageID()
+      : `3EB0${Math.random().toString(16).slice(2, 18).toUpperCase()}`;
+    session.pendingSendJids.set(preMsgId, jid);
+
+    const enviado = await session.socket.sendMessage(jid, { text: texto }, { messageId: preMsgId });
 
     const sentJid: string = enviado?.key?.remoteJid ?? '';
     if (sentJid.endsWith('@lid')) {
@@ -1333,13 +1388,18 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       this.diag(session, `[Baileys] LID capturado ao enviar: ${sentJid} → ${jid}`);
     }
 
-    const msgId: string = enviado?.key?.id ?? '';
-    if (msgId) {
+    const msgId: string = enviado?.key?.id ?? preMsgId;
+    if (msgId !== preMsgId) {
+      // Baileys usou ID diferente do pré-gerado (improvável mas defensivo)
+      session.pendingSendJids.delete(preMsgId);
       session.pendingSendJids.set(msgId, jid);
-      setTimeout(() => session.pendingSendJids.delete(msgId), 60_000);
     }
+    setTimeout(() => {
+      session.pendingSendJids.delete(preMsgId);
+      session.pendingSendJids.delete(msgId);
+    }, 60_000);
 
-    this.logger.log(`Mensagem enviada para ${telefone} via loja ${lojaId}`);
+    this.logger.log(`[Baileys] mensagem enviada para ${telefone} loja=${lojaId} msgId=${msgId}`);
     return msgId;
   }
 
@@ -1354,8 +1414,10 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
   getQrCode(lojaId: string): { qrcode: string | null; status: StatusConexao } {
     const session = this.sessions.get(lojaId);
 
-    // Se não há socket ativo, inicia a sessão em background (ex: loja pausada que o usuário quer reconectar)
-    if (!session?.socket) {
+    // Se não há socket ativo e nenhum iniciarSessao em andamento, inicia em background.
+    // O lock iniciandoSessao é o guard canônico — evita que o polling do frontend dispare
+    // um segundo iniciarSessao durante a janela de reconexão automática onde socket=null.
+    if (!session?.socket && !this.iniciandoSessao.has(lojaId)) {
       if (!this.iniciando.has(lojaId)) {
         this.iniciando.add(lojaId);
         this.iniciarSessao(lojaId)
@@ -1365,7 +1427,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       return { qrcode: null, status: 'aguardando' };
     }
 
-    return { qrcode: session.qrAtual, status: session.status };
+    return { qrcode: session?.qrAtual ?? null, status: session?.status ?? 'desconectado' };
   }
 
   getDiagnostico(lojaId: string) {
@@ -1376,6 +1438,8 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       qrcodePresente: !!(session?.qrAtual),
       socketAtivo: !!(session?.socket),
       reconectando: session?.reconectando ?? false,
+      iniciandoSessao: this.iniciandoSessao.has(lojaId),
+      sessaoSeq: session?.sessaoSeq ?? 0,
       msgsRecebidas: session?.msgsRecebidas ?? 0,
       msgsIgnoradas: session?.msgsIgnoradas ?? 0,
       ultimaMsgEm: session?.ultimaMsgEm ?? null,
