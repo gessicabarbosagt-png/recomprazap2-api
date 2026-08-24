@@ -14,7 +14,13 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule);
 
-  app.use(helmet());
+  app.use(
+    helmet({
+      // API consumida por frontend em domínio diferente (Vercel → Railway).
+      // same-origin (padrão do helmet) bloquearia o navegador de ler respostas cross-origin.
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+    }),
+  );
 
   // Prefixo global para todas as rotas: /api/v1/clientes, /api/v1/produtos, etc.
   app.setGlobalPrefix('api/v1');
