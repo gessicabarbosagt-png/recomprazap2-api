@@ -3,7 +3,8 @@ import * as crypto from 'crypto';
 const ALGO = 'aes-256-gcm';
 
 function getKey(): Buffer {
-  const raw = process.env.ENCRYPTION_KEY ?? 'recomprazap-chave-padrao-mude-em-producao-obrig';
+  const raw = process.env.ENCRYPTION_KEY;
+  if (!raw) throw new Error('ENCRYPTION_KEY não configurada no ambiente');
   return crypto.createHash('sha256').update(raw).digest();
 }
 

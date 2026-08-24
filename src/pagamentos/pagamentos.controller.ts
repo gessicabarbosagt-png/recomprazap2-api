@@ -3,6 +3,7 @@ import {
   HttpCode, HttpStatus, Headers, RawBodyRequest, Req,
   UnauthorizedException, BadRequestException,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { PagamentosService } from './pagamentos.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -23,6 +24,7 @@ export class PagamentosController {
   // ── Webhook público (sem JWT) ──────────────────────────────────────
 
   // POST /api/v1/webhooks/mercadopago
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
   @Post('webhooks/mercadopago')
   @HttpCode(HttpStatus.OK)
   async webhookMercadoPago(
@@ -30,17 +32,18 @@ export class PagamentosController {
     @Headers('x-signature') xSignature: string,
     @Headers('x-request-id') xRequestId: string,
   ) {
-    const dataId = String(body?.data?.id ?? '');
+    if (!xSignature) {
+      throw new UnauthorizedException('Assinatura do webhook ausente');
+    }
 
-    if (xSignature) {
-      const tsMatch = xSignature.match(/ts=(\d+)/);
-      const ts = tsMatch?.[1] ?? '';
-      const valido = this.pagamentosService.validarAssinaturaWebhook(
-        xSignature, xRequestId ?? '', dataId, ts,
-      );
-      if (!valido) {
-        throw new UnauthorizedException('Assinatura do webhook inválida');
-      }
+    const dataId = String(body?.data?.id ?? '');
+    const tsMatch = xSignature.match(/ts=(\d+)/);
+    const ts = tsMatch?.[1] ?? '';
+    const valido = this.pagamentosService.validarAssinaturaWebhook(
+      xSignature, xRequestId ?? '', dataId, ts,
+    );
+    if (!valido) {
+      throw new UnauthorizedException('Assinatura do webhook inválida');
     }
 
     await this.pagamentosService.processarWebhook(body);

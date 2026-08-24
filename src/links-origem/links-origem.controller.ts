@@ -3,6 +3,7 @@ import {
   Body, Param, UseGuards, HttpCode, HttpStatus,
   Res, NotFoundException,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { Response } from 'express';
 import { LinksOrigemService } from './links-origem.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -56,6 +57,7 @@ export class LinksOrigemController {
 export class LinksOrigemPublicController {
   constructor(private readonly service: LinksOrigemService) {}
 
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
   @Get('r/:slug')
   async redirectSlug(
     @Param('slug') slug: string,

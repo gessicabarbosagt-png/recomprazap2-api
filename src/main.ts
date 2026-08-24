@@ -1,9 +1,20 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
+import helmet from 'helmet';
+
+const REQUIRED_ENV_VARS = ['ENCRYPTION_KEY', 'MP_WEBHOOK_SECRET', 'JWT_SECRET'];
 
 async function bootstrap() {
+  for (const name of REQUIRED_ENV_VARS) {
+    if (!process.env[name]) {
+      throw new Error(`Variável de ambiente obrigatória não configurada: ${name}. Aplicação não pode iniciar.`);
+    }
+  }
+
   const app = await NestFactory.create(AppModule);
+
+  app.use(helmet());
 
   // Prefixo global para todas as rotas: /api/v1/clientes, /api/v1/produtos, etc.
   app.setGlobalPrefix('api/v1');

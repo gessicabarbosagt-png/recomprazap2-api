@@ -22,7 +22,7 @@ export class PagamentosService {
   }
 
   private get webhookSecret(): string {
-    return this.config.get<string>('MP_WEBHOOK_SECRET') ?? '';
+    return this.config.getOrThrow<string>('MP_WEBHOOK_SECRET');
   }
 
   private get frontendUrl(): string {
@@ -258,10 +258,6 @@ export class PagamentosService {
     dataId: string,
     ts: string,
   ): boolean {
-    if (!this.webhookSecret) {
-      this.logger.warn('[MP Webhook] MP_WEBHOOK_SECRET não configurado — validação ignorada');
-      return true;
-    }
     const message = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
     const expected = createHmac('sha256', this.webhookSecret).update(message).digest('hex');
     const v1Match = xSignature.match(/v1=([a-f0-9]+)/);

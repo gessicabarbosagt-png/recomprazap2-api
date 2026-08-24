@@ -1,4 +1,5 @@
 import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 
@@ -9,7 +10,7 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   // POST /api/v1/auth/login
-  // O @HttpCode garante que retorna 200 (não 201 que é o padrão do POST)
+  @Throttle({ default: { limit: 5, ttl: 900_000 } })
   @Post('login')
   @HttpCode(HttpStatus.OK)
   login(@Body() loginDto: LoginDto) {
