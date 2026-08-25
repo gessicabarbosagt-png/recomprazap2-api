@@ -14,6 +14,10 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule);
 
+  // Railway (e outros reverse-proxies) encaminha o IP real do cliente via X-Forwarded-For.
+  // Sem isso, req.ip retorna o IP interno do proxy — o throttler nunca acumula hits por usuário.
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
+
   app.use(
     helmet({
       // API consumida por frontend em domínio diferente (Vercel → Railway).
