@@ -4,27 +4,54 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { IsEnum, IsOptional, IsString, IsNumber, IsUUID, Min } from 'class-validator';
+import { Type } from 'class-transformer';
 import { DATABASE_CLIENT } from '../database/database.module';
 import { CiclosService } from '../ciclos/ciclos.service';
 import { MetaAdsService } from '../meta-ads/meta-ads.service';
 
 export type StatusJornada = 'aguardando' | 'orcamento_enviado' | 'comprou' | 'nao_comprou';
 
-export interface AtualizarPedidoDto {
+export class AtualizarPedidoDto {
+  @IsOptional()
+  @IsEnum(['confirmado', 'entregue', 'cancelado'])
   status?: 'confirmado' | 'entregue' | 'cancelado';
+
+  @IsOptional()
+  @IsEnum(['entrega', 'retirada'])
   tipoEntrega?: 'entrega' | 'retirada';
+
+  @IsOptional()
+  @IsEnum(['dinheiro', 'pix', 'cartao', 'link'])
   tipoPagamento?: 'dinheiro' | 'pix' | 'cartao' | 'link';
+
+  @IsOptional()
+  @IsString()
   linkPagamento?: string;
 }
 
-export interface AtualizarJornadaDto {
-  etapaId: string;       // UUID da etapa
+export class AtualizarJornadaDto {
+  @IsUUID()
+  etapaId: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
   valor?: number | null;
 }
 
-export interface CriarPedidoDto {
+export class CriarPedidoDto {
+  @IsUUID()
   clienteId: string;
+
+  @IsUUID()
   etapaId: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
   valor?: number | null;
 }
 

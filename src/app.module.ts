@@ -3,6 +3,7 @@ import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { ThrottlerExceptionFilter } from './common/filters/throttler-exception.filter';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './auth/auth.module';
 import { LojasModule } from './lojas/lojas.module';
@@ -63,6 +64,10 @@ import { EmailModule } from './email/email.module';
     WorkerModule,
   ],
   providers: [
+    // Ordem importa: NestJS aplica filtros do último para o primeiro registrado.
+    // HttpExceptionFilter primeiro (mais genérico), ThrottlerExceptionFilter depois
+    // (mais específico — sobrescreve o comportamento para ThrottlerException).
+    { provide: APP_FILTER, useClass: HttpExceptionFilter },
     { provide: APP_FILTER, useClass: ThrottlerExceptionFilter },
     { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
