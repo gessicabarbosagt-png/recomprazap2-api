@@ -2,7 +2,7 @@ import { Injectable, Logger, Inject, BadRequestException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config';
 import { DATABASE_CLIENT } from '../database/database.module';
 import axios from 'axios';
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { Resend } from 'resend';
 import { EmailService } from '../email/email.service';
 
@@ -262,7 +262,10 @@ export class PagamentosService {
     const expected = createHmac('sha256', this.webhookSecret).update(message).digest('hex');
     const v1Match = xSignature.match(/v1=([a-f0-9]+)/);
     if (!v1Match) return false;
-    return expected === v1Match[1];
+    const expectedBuf = Buffer.from(expected, 'hex');
+    const receivedBuf = Buffer.from(v1Match[1], 'hex');
+    if (expectedBuf.length !== receivedBuf.length) return false;
+    return timingSafeEqual(expectedBuf, receivedBuf);
   }
 
   // ── Webhook: processamento de eventos ─────────────────────────────

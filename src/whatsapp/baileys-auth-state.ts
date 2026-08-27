@@ -1,5 +1,6 @@
-// Auth state do Baileys persistido no PostgreSQL.
+// Auth state do Baileys persistido no PostgreSQL com criptografia AES-256-GCM.
 // Cada loja tem seu próprio conjunto de credenciais, prefixadas com lojaId.
+import { encriptar, decriptar } from '../common/cripto';
 const { initAuthCreds, BufferJSON } = require('@whiskeysockets/baileys');
 
 export async function useDatabaseAuthState(sql: any, lojaId: string) {
@@ -8,11 +9,20 @@ export async function useDatabaseAuthState(sql: any, lojaId: string) {
   async function readData(id: string): Promise<any | null> {
     const rows = await sql`SELECT value FROM baileys_auth_state WHERE id = ${prefix + id}`;
     if (!rows[0]) return null;
-    return JSON.parse(rows[0].value, BufferJSON.reviver);
+    const raw = rows[0].value as string;
+    // Backwards-compat: tenta decriptar (novo formato); se falhar, lê JSON puro (legado).
+    // Legado é migrado para criptografado no próximo writeData().
+    let json: string;
+    try {
+      json = decriptar(raw);
+    } catch {
+      json = raw;
+    }
+    return JSON.parse(json, BufferJSON.reviver);
   }
 
   async function writeData(id: string, data: any): Promise<void> {
-    const value = JSON.stringify(data, BufferJSON.replacer);
+    const value = encriptar(JSON.stringify(data, BufferJSON.replacer));
     await sql`
       INSERT INTO baileys_auth_state (id, value)
       VALUES (${prefix + id}, ${value})
