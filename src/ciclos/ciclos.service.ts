@@ -300,12 +300,11 @@ export class CiclosService {
     }
   }
 
-  // Retorna quantos ciclos estão vencidos e dispara todos em background (5s de delay entre cada)
+  // Dispara todos os ciclos vencidos de forma síncrona e retorna resultado por ciclo
   async dispararTodos(lojaId: string) {
     const ciclos = await this.sql`
-      SELECT cr.id, cr.quantidade,
-             c.nome  AS cliente_nome,  c.telefone AS cliente_telefone,
-             p.nome  AS produto_nome,  p.unidade  AS produto_unidade
+      SELECT cr.id,
+             c.nome AS cliente_nome
       FROM ciclos_recompra cr
       JOIN clientes c ON c.id = cr.cliente_id
       JOIN produtos  p ON p.id = cr.produto_id
@@ -315,47 +314,26 @@ export class CiclosService {
         AND cr.proxima_notificacao <= NOW()
     `;
 
-    const total = ciclos.length;
-    this.processarDisparoEmMassa(ciclos, lojaId).catch((err) =>
-      this.logger.error('Erro no disparo em massa', err?.message),
-    );
+    const resultados: { id: string; clienteNome: string; ok: boolean; erro?: string }[] = [];
 
-    return { total, mensagem: `Disparando ${total} lembrete(s) em background com intervalo de 5s` };
-  }
-
-  private async processarDisparoEmMassa(ciclos: any[], lojaId: string) {
     for (const ciclo of ciclos) {
       try {
-        const [lembrete] = await this.sql`
-          INSERT INTO lembretes (loja_id, ciclo_id, status, agendado_para)
-          VALUES (${lojaId}, ${ciclo.id}, 'agendado', NOW())
-          RETURNING id
-        `;
-        await this.whatsappService.enviarLembrete({
-          telefone:    ciclo.clienteTelefone,
-          clienteNome: ciclo.clienteNome,
-          produtoNome: ciclo.produtoNome,
-          quantidade:  ciclo.quantidade ?? undefined,
-          unidade:     ciclo.produtoUnidade ?? undefined,
-          lembreteId:  lembrete.id,
-          lojaId,
-        });
-        await this.sql`UPDATE lembretes SET status='enviado', enviado_em=NOW() WHERE id=${lembrete.id}`;
-        await this.sql`
-          UPDATE ciclos_recompra SET
-            status_ultimo_envio   = 'sucesso',
-            adiado_pelo_cliente   = FALSE,
-            data_original_disparo = NULL,
-            prazo_solicitado_dias = NULL,
-            precisa_revisao       = FALSE,
-            updated_at            = NOW()
-          WHERE id = ${ciclo.id}
-        `;
+        await this.enviarLembreteImediato(ciclo.id, lojaId);
+        resultados.push({ id: ciclo.id, clienteNome: ciclo.clienteNome, ok: true });
       } catch (err: any) {
         this.logger.error(`Erro ao enviar lembrete para ciclo ${ciclo.id}`, err?.message);
-        await this.sql`UPDATE ciclos_recompra SET status_ultimo_envio='erro', updated_at=NOW() WHERE id=${ciclo.id}`;
+        resultados.push({
+          id: ciclo.id,
+          clienteNome: ciclo.clienteNome,
+          ok: false,
+          erro: err?.response?.message ?? err?.message ?? 'Erro desconhecido',
+        });
       }
-      await new Promise((r) => setTimeout(r, 5_000));
     }
+
+    const sucesso = resultados.filter((r) => r.ok).length;
+    const falhas = resultados.filter((r) => !r.ok).length;
+
+    return { total: ciclos.length, sucesso, falhas, resultados };
   }
 }
