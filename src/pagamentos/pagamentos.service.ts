@@ -42,7 +42,7 @@ export class PagamentosService {
     const [loja] = await this.sql`
       SELECT
         status_assinatura, valor_mensalidade, proximo_vencimento,
-        mp_subscription_id, mp_payment_method, mp_card_last_four,
+        mp_payment_method, mp_card_last_four,
         inadimplente_desde, ativa
       FROM lojas WHERE id = ${lojaId} AND deleted_at IS NULL
     `;
