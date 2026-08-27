@@ -4,11 +4,13 @@ import {
 import { DATABASE_CLIENT } from '../database/database.module';
 import { CriarClienteDto } from './dto/criar-cliente.dto';
 import { AtualizarClienteDto } from './dto/atualizar-cliente.dto';
+import { AtividadeLogService } from '../atividade-log/atividade-log.service';
 
 @Injectable()
 export class ClientesService {
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
+    private readonly atividadeLog: AtividadeLogService,
   ) {}
 
   async listar(lojaId: string) {
@@ -70,6 +72,8 @@ export class ClientesService {
       RETURNING id, nome, telefone, email, ativo, consentimento_whatsapp,
                 origem_lead, origem_detalhe, whatsapp_nome, created_at
     `;
+
+    void this.atividadeLog.registrar(lojaId, 'cliente_criado', `Cliente ${dto.nome} cadastrado`);
 
     return novoCliente;
   }

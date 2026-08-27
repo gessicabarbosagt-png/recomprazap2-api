@@ -9,6 +9,7 @@ import { Type } from 'class-transformer';
 import { DATABASE_CLIENT } from '../database/database.module';
 import { CiclosService } from '../ciclos/ciclos.service';
 import { MetaAdsService } from '../meta-ads/meta-ads.service';
+import { AtividadeLogService } from '../atividade-log/atividade-log.service';
 
 export type StatusJornada = 'aguardando' | 'orcamento_enviado' | 'comprou' | 'nao_comprou';
 
@@ -61,6 +62,7 @@ export class PedidosService {
     @Inject(DATABASE_CLIENT) private readonly sql: any,
     private readonly ciclosService: CiclosService,
     private readonly metaAdsService: MetaAdsService,
+    private readonly atividadeLog: AtividadeLogService,
   ) {}
 
   // BRT é fixamente UTC-3 desde 2019 (sem horário de verão)
@@ -404,6 +406,9 @@ export class PedidosService {
         RETURNING id, valor, status_jornada, confirmado_em
       `;
       if (!atualizado) throw new NotFoundException('Pedido não encontrado');
+      // Log apenas quando a venda é confirmada pela primeira vez (transição → comprou)
+      void this.atividadeLog.registrar(lojaId, 'pedido_confirmado',
+        `Venda de R$ ${Number(valor).toFixed(2).replace('.', ',')} confirmada manualmente`);
       return atualizado;
     }
 

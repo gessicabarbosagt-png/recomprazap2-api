@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { DATABASE_CLIENT } from '../database/database.module';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
+import { AtividadeLogService } from '../atividade-log/atividade-log.service';
 
 // DTO inline — idealmente ficaria em dto/criar-ciclo.dto.ts
 // Mantido aqui para facilitar a leitura do service
@@ -30,6 +31,7 @@ export class CiclosService {
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
     private readonly whatsappService: WhatsappService,
+    private readonly atividadeLog: AtividadeLogService,
   ) {}
 
   // Lista todos os ciclos ativos de uma loja, com dados do cliente e produto
@@ -130,6 +132,23 @@ export class CiclosService {
       )
       RETURNING *
     `;
+
+    // Busca nomes para a descrição do log (não bloqueia o retorno)
+    void (async () => {
+      try {
+        const [info] = await this.sql`
+          SELECT c.nome AS cliente_nome, p.nome AS produto_nome
+          FROM ciclos_recompra cr
+          JOIN clientes c ON c.id = cr.cliente_id
+          JOIN produtos  p ON p.id = cr.produto_id
+          WHERE cr.id = ${novoCiclo.id}
+        `;
+        if (info) {
+          void this.atividadeLog.registrar(lojaId, 'ciclo_criado',
+            `Ciclo de ${info.produtoNome} criado para ${info.clienteNome} (${dto.intervaloDias}d)`);
+        }
+      } catch { /* silent */ }
+    })();
 
     return novoCiclo;
   }

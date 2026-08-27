@@ -25,6 +25,8 @@ import { MetaAdsModule } from './meta-ads/meta-ads.module';
 import { LinksOrigemModule } from './links-origem/links-origem.module';
 import { PlanosModule } from './planos/planos.module';
 import { EmailModule } from './email/email.module';
+import { AtividadeLogModule } from './atividade-log/atividade-log.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -62,6 +64,10 @@ import { EmailModule } from './email/email.module';
     // Worker: Crons + Filas BullMQ + Processors
     // Responsável por toda a automação de envio de lembretes
     WorkerModule,
+
+    // Dashboard e log de atividade
+    AtividadeLogModule,
+    DashboardModule,
   ],
   providers: [
     // Ordem importa: NestJS aplica filtros do último para o primeiro registrado.
