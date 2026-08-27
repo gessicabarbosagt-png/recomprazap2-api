@@ -311,7 +311,7 @@ export class CiclosService {
       WHERE cr.loja_id = ${lojaId}
         AND cr.ativo = TRUE
         AND cr.deleted_at IS NULL
-        AND cr.proxima_notificacao <= NOW()
+        AND cr.proxima_notificacao::date <= CURRENT_DATE
     `;
 
     const resultados: { id: string; clienteNome: string; ok: boolean; erro?: string }[] = [];

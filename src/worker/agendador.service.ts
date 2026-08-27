@@ -82,7 +82,7 @@ export class AgendadorService implements OnApplicationBootstrap {
         AND l.ativa = TRUE
         AND l.status_assinatura != 'cancelada'
         AND c.consentimento_whatsapp = TRUE   -- LGPD: só envia com consentimento
-        AND cr.proxima_notificacao <= NOW()
+        AND cr.proxima_notificacao::date <= CURRENT_DATE
         AND NOT EXISTS (
           SELECT 1 FROM lembretes
           WHERE ciclo_id = cr.id
