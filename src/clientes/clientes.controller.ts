@@ -1,7 +1,11 @@
 import {
   Controller, Get, Post, Patch, Delete,
   Body, Param, Query, UseGuards, HttpCode, HttpStatus,
+  UseInterceptors, UploadedFile, Res, BadRequestException,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { Response } from 'express';
+import * as multer from 'multer';
 import { ClientesService } from './clientes.service';
 import { CriarClienteDto } from './dto/criar-cliente.dto';
 import { AtualizarClienteDto } from './dto/atualizar-cliente.dto';
@@ -19,7 +23,7 @@ export class ClientesController {
     return this.clientesService.listar(usuario.lojaId);
   }
 
-  // GET /api/v1/clientes/origens?dias=30  ou  ?desde=2025-07-01&ate=2025-07-31
+  // GET /api/v1/clientes/origens?dias=30
   @Get('origens')
   origensResumo(
     @UsuarioAtual() usuario: UsuarioLogado,
@@ -33,6 +37,18 @@ export class ClientesController {
       desde,
       ate,
     );
+  }
+
+  // GET /api/v1/clientes/exportar-csv
+  @Get('exportar-csv')
+  async exportarCsv(
+    @UsuarioAtual() usuario: UsuarioLogado,
+    @Res() res: Response,
+  ) {
+    const csv = await this.clientesService.exportarCsv(usuario.lojaId);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="clientes.csv"');
+    res.send(csv);
   }
 
   // GET /api/v1/clientes/:id
@@ -51,6 +67,22 @@ export class ClientesController {
     @UsuarioAtual() usuario: UsuarioLogado,
   ) {
     return this.clientesService.criar(dto, usuario.lojaId);
+  }
+
+  // POST /api/v1/clientes/importar-csv
+  @Post('importar-csv')
+  @UseInterceptors(
+    FileInterceptor('arquivo', {
+      storage: multer.memoryStorage(),
+      limits: { fileSize: 2 * 1024 * 1024 }, // 2 MB
+    }),
+  )
+  async importarCsv(
+    @UploadedFile() arquivo: Express.Multer.File,
+    @UsuarioAtual() usuario: UsuarioLogado,
+  ) {
+    if (!arquivo) throw new BadRequestException('Nenhum arquivo enviado');
+    return this.clientesService.importarCsv(arquivo, usuario.lojaId);
   }
 
   // PATCH /api/v1/clientes/:id

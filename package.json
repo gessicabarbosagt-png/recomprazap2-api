@@ -43,6 +43,7 @@
     "@types/bcrypt": "^5.0.0",
     "@types/bull": "^4.10.0",
     "@types/jest": "^30.0.0",
+    "@types/multer": "^2.2.0",
     "@types/node": "^20.0.0",
     "@types/passport-jwt": "^3.0.9",
     "@types/passport-local": "^1.0.35",
