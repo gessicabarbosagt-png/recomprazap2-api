@@ -86,12 +86,12 @@ const casos: [string, string | null][] = [
   ['abc123', null],
   ['+1-800-555-0100', '+18005550100'],
 ];
-let ok = 0, fail = 0;
+let ok = 0, falhas = 0;
 for (const [input, esperado] of casos) {
   const resultado = normalizarTelefone(input);
   const passou = resultado === esperado;
   console.log(`${passou ? '✅' : '❌'} normalizarTelefone("${input}") → ${resultado} ${!passou ? `(esperado: ${esperado})` : ''}`);
-  passou ? ok++ : fail++;
+  passou ? ok++ : falhas++;
 }
 
 console.log('\n===== Teste de Sanitização de Injeção =====\n');
@@ -107,7 +107,7 @@ for (const [input, esperado] of casosSan) {
   const resultado = sanitizarInjection(input);
   const passou = resultado === esperado;
   console.log(`${passou ? '✅' : '❌'} sanitizarInjection("${input}") → "${resultado}" ${!passou ? `(esperado: "${esperado}")` : ''}`);
-  passou ? ok++ : fail++;
+  passou ? ok++ : falhas++;
 }
 
 console.log('\n===== Teste de CSV Cell (export) =====\n');
@@ -123,7 +123,7 @@ for (const [input, esperado] of casosCel) {
   const resultado = csvCell(input);
   const passou = resultado === esperado;
   console.log(`${passou ? '✅' : '❌'} csvCell(${JSON.stringify(input)}) → "${resultado}" ${!passou ? `(esperado: "${esperado}")` : ''}`);
-  passou ? ok++ : fail++;
+  passou ? ok++ : falhas++;
 }
 
 console.log('\n===== Teste de Parse do CSV de Teste =====\n');
@@ -185,8 +185,8 @@ const passou2 =
 console.log(`\n${passou2 ? '✅' : '❌'} Resultado: ${importadosSimulados.length} importados, ${atualizadosSimulados.length} atualizados, ${erros.length} erros`);
 if (!passou2) {
   console.log(`   Esperado: ${resultadoEsperado.importados} importados, ${resultadoEsperado.atualizados} atualizados, ${resultadoEsperado.erros} erros`);
-  fail++;
+  falhas++;
 } else ok++;
 
-console.log(`\n===== Total: ${ok} ✅  ${fail} ❌ =====\n`);
-if (fail > 0) process.exit(1);
+console.log(`\n===== Total: ${ok} ✅  ${falhas} ❌ =====\n`);
+if (falhas > 0) process.exit(1);
