@@ -5,6 +5,13 @@ import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { DATABASE_CLIENT } from '../database/database.module';
 
+type AcaoAuditoria =
+  | 'criar_loja'
+  | 'desativar_loja'
+  | 'ativar_loja'
+  | 'resetar_senha_lojista'
+  | 'alterar_plano';
+
 function gerarSenhaTemp(): string {
   return crypto.randomBytes(8).toString('base64url').slice(0, 10);
 }
@@ -125,6 +132,26 @@ export class AdminService {
   }
 
   // ----------------------------------------------------------------
+  // Grava registro imutável de ação administrativa na tabela audit_log
+  // ----------------------------------------------------------------
+  private async gravarAuditoria(
+    adminId: string,
+    acao: AcaoAuditoria,
+    lojaAfetadaId: string | null,
+    detalhes?: Record<string, unknown>,
+  ) {
+    await this.sql`
+      INSERT INTO audit_log (admin_id, acao, loja_afetada_id, detalhes)
+      VALUES (
+        ${adminId},
+        ${acao},
+        ${lojaAfetadaId},
+        ${detalhes ? JSON.stringify(detalhes) : null}
+      )
+    `.catch(() => {});
+  }
+
+  // ----------------------------------------------------------------
   // Cria loja + usuário lojista com senha temporária + seeds padrão
   // ----------------------------------------------------------------
   async criarLoja(dto: {
@@ -132,7 +159,7 @@ export class AdminService {
     lojaEmail: string;
     usuarioNome: string;
     usuarioEmail: string;
-  }) {
+  }, adminId: string) {
     const existeEmail = await this.sql`
       SELECT id FROM lojas WHERE email = ${dto.lojaEmail} AND deleted_at IS NULL
     `;
@@ -168,6 +195,11 @@ export class AdminService {
 
     await this.rodarSeedsPorLoja(loja.id);
 
+    await this.gravarAuditoria(adminId, 'criar_loja', loja.id, {
+      loja_nome: dto.lojaNome,
+      usuario_email: dto.usuarioEmail,
+    });
+
     return { loja, usuario, senhaTemporaria: senhaTemp };
   }
 
@@ -180,7 +212,7 @@ export class AdminService {
     statusAssinatura?: string;
     valorMensalidade?: number | null;
     proximoVencimento?: string | null;
-  }) {
+  }, adminId: string) {
     const [atualizado] = await this.sql`
       UPDATE lojas
       SET
@@ -194,26 +226,37 @@ export class AdminService {
       RETURNING id, nome, plano, plano_slug, status_assinatura, valor_mensalidade, proximo_vencimento
     `;
     if (!atualizado) throw new NotFoundException('Loja não encontrada');
+
+    await this.gravarAuditoria(adminId, 'alterar_plano', id, {
+      plano: dto.plano,
+      status_assinatura: dto.statusAssinatura,
+      valor_mensalidade: dto.valorMensalidade,
+      proximo_vencimento: dto.proximoVencimento,
+    });
+
     return atualizado;
   }
 
   // ----------------------------------------------------------------
   // Ativa ou desativa uma loja
   // ----------------------------------------------------------------
-  async ativarDesativar(id: string, ativa: boolean) {
+  async ativarDesativar(id: string, ativa: boolean, adminId: string) {
     const [atualizado] = await this.sql`
       UPDATE lojas SET ativa = ${ativa}, updated_at = NOW()
       WHERE id = ${id} AND deleted_at IS NULL
       RETURNING id, nome, ativa
     `;
     if (!atualizado) throw new NotFoundException('Loja não encontrada');
+
+    await this.gravarAuditoria(adminId, ativa ? 'ativar_loja' : 'desativar_loja', id);
+
     return atualizado;
   }
 
   // ----------------------------------------------------------------
   // Gera nova senha temporária para um usuário
   // ----------------------------------------------------------------
-  async resetarSenha(lojaId: string, userId: string) {
+  async resetarSenha(lojaId: string, userId: string, adminId: string) {
     const [usuario] = await this.sql`
       SELECT id FROM usuarios WHERE id = ${userId} AND loja_id = ${lojaId} AND deleted_at IS NULL
     `;
@@ -226,6 +269,8 @@ export class AdminService {
       UPDATE usuarios SET senha_hash = ${senhaHash}, updated_at = NOW()
       WHERE id = ${userId}
     `;
+
+    await this.gravarAuditoria(adminId, 'resetar_senha_lojista', lojaId, { usuario_id: userId });
 
     return { senhaTemporaria: senhaTemp };
   }

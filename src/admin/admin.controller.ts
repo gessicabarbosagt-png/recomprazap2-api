@@ -4,6 +4,7 @@ import {
 import { AdminService } from './admin.service';
 import { AdminGuard } from './admin.guard';
 import { NotificacoesService } from '../notificacoes/notificacoes.service';
+import { UsuarioAtual, UsuarioLogado } from '../common/decorators/usuario-atual.decorator';
 import {
   IsString, IsEmail, IsOptional, IsBoolean, IsNumber, IsIn,
 } from 'class-validator';
@@ -54,8 +55,8 @@ export class AdminController {
 
   // POST /api/v1/admin/lojas — cria loja + usuário + seeds
   @Post('lojas')
-  criarLoja(@Body() dto: CriarLojaDto) {
-    return this.adminService.criarLoja(dto);
+  criarLoja(@Body() dto: CriarLojaDto, @UsuarioAtual() admin: UsuarioLogado) {
+    return this.adminService.criarLoja(dto, admin.id);
   }
 
   // GET /api/v1/admin/lojas/:id — detalhe da loja
@@ -67,15 +68,23 @@ export class AdminController {
   // PATCH /api/v1/admin/lojas/:id — atualiza assinatura
   @Patch('lojas/:id')
   @HttpCode(HttpStatus.OK)
-  atualizarLoja(@Param('id') id: string, @Body() dto: AtualizarLojaDto) {
-    return this.adminService.atualizarLoja(id, dto);
+  atualizarLoja(
+    @Param('id') id: string,
+    @Body() dto: AtualizarLojaDto,
+    @UsuarioAtual() admin: UsuarioLogado,
+  ) {
+    return this.adminService.atualizarLoja(id, dto, admin.id);
   }
 
   // PATCH /api/v1/admin/lojas/:id/ativar — ativa ou desativa
   @Patch('lojas/:id/ativar')
   @HttpCode(HttpStatus.OK)
-  ativarDesativar(@Param('id') id: string, @Body() dto: AtivarDesativarDto) {
-    return this.adminService.ativarDesativar(id, dto.ativa);
+  ativarDesativar(
+    @Param('id') id: string,
+    @Body() dto: AtivarDesativarDto,
+    @UsuarioAtual() admin: UsuarioLogado,
+  ) {
+    return this.adminService.ativarDesativar(id, dto.ativa, admin.id);
   }
 
   // POST /api/v1/admin/lojas/:lojaId/usuarios/:userId/resetar-senha
@@ -84,8 +93,9 @@ export class AdminController {
   resetarSenha(
     @Param('lojaId') lojaId: string,
     @Param('userId') userId: string,
+    @UsuarioAtual() admin: UsuarioLogado,
   ) {
-    return this.adminService.resetarSenha(lojaId, userId);
+    return this.adminService.resetarSenha(lojaId, userId, admin.id);
   }
 
   // POST /api/v1/admin/notificacoes/loja/:lojaId — notifica uma loja específica

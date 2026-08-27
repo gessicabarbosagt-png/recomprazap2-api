@@ -5,6 +5,8 @@ import * as bcrypt from 'bcrypt';
 import { AuthService } from '../auth.service';
 import { DATABASE_CLIENT } from '../../database/database.module';
 
+const IP_TESTE = '192.168.1.100';
+
 const usuarioLojista = {
   id: 'user-uuid-1',
   nome: 'Maria',
@@ -65,7 +67,7 @@ describe('AuthService', () => {
     sql.mockResolvedValueOnce([usuarioLojista]);
     jest.spyOn(bcrypt, 'compare').mockResolvedValueOnce(true as never);
 
-    const resultado = await service.login({ email: 'maria@loja.com', senha: '123456' });
+    const resultado = await service.login({ email: 'maria@loja.com', senha: '123456' }, IP_TESTE);
 
     expect(resultado.accessToken).toBe('fake-jwt-token');
     expect(resultado.usuario.role).toBe('lojista');
@@ -73,19 +75,16 @@ describe('AuthService', () => {
   });
 
   it('lança 401 quando a loja está desativada (SQL não retorna usuário)', async () => {
-    // A query aplica: l.ativa = TRUE AND l.status_assinatura != 'cancelada'
-    // Loja desativada é excluída pelo banco antes mesmo de checar a senha.
     sql.mockResolvedValueOnce([]);
 
-    await expect(service.login({ email: 'maria@loja.com', senha: '123456' }))
+    await expect(service.login({ email: 'maria@loja.com', senha: '123456' }, IP_TESTE))
       .rejects.toThrow(UnauthorizedException);
   });
 
   it('lança 401 quando a assinatura está cancelada (SQL não retorna usuário)', async () => {
-    // status_assinatura = 'cancelada' é tratado igual à loja desativada: sem acesso.
     sql.mockResolvedValueOnce([]);
 
-    await expect(service.login({ email: 'maria@loja.com', senha: '123456' }))
+    await expect(service.login({ email: 'maria@loja.com', senha: '123456' }, IP_TESTE))
       .rejects.toThrow(UnauthorizedException);
   });
 
@@ -93,7 +92,7 @@ describe('AuthService', () => {
     sql.mockResolvedValueOnce([usuarioAdmin]);
     jest.spyOn(bcrypt, 'compare').mockResolvedValueOnce(true as never);
 
-    const resultado = await service.login({ email: 'admin@system.com', senha: 'adminpass' });
+    const resultado = await service.login({ email: 'admin@system.com', senha: 'adminpass' }, IP_TESTE);
 
     expect(resultado.usuario.role).toBe('admin');
     expect(resultado.usuario.loja).toEqual({ id: 'loja-uuid-1', nome: 'BeeUp Pizzarias' });
@@ -103,7 +102,7 @@ describe('AuthService', () => {
     sql.mockResolvedValueOnce([usuarioAdminSemLoja]);
     jest.spyOn(bcrypt, 'compare').mockResolvedValueOnce(true as never);
 
-    const resultado = await service.login({ email: 'admin2@system.com', senha: 'adminpass' });
+    const resultado = await service.login({ email: 'admin2@system.com', senha: 'adminpass' }, IP_TESTE);
 
     expect(resultado.usuario.role).toBe('admin');
     expect(resultado.usuario.loja).toBeNull();
@@ -113,7 +112,47 @@ describe('AuthService', () => {
     sql.mockResolvedValueOnce([usuarioLojista]);
     jest.spyOn(bcrypt, 'compare').mockResolvedValueOnce(false as never);
 
-    await expect(service.login({ email: 'maria@loja.com', senha: 'errada' }))
+    await expect(service.login({ email: 'maria@loja.com', senha: 'errada' }, IP_TESTE))
       .rejects.toThrow(UnauthorizedException);
+  });
+
+  // ── Testes dos novos logs de falha ────────────────────────────────
+
+  it('loga [LOGIN_FALHA] com email e IP quando usuário não é encontrado', async () => {
+    sql.mockResolvedValueOnce([]);
+    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+
+    await service.login({ email: 'naoexiste@x.com', senha: '123' }, '10.0.0.5').catch(() => {});
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[LOGIN_FALHA]'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('naoexiste@x.com'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('10.0.0.5'));
+    // Garante que a senha jamais aparece no log
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('123'));
+  });
+
+  it('loga [LOGIN_FALHA] com email e IP quando a senha está incorreta', async () => {
+    sql.mockResolvedValueOnce([usuarioLojista]);
+    jest.spyOn(bcrypt, 'compare').mockResolvedValueOnce(false as never);
+    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+
+    await service.login({ email: 'maria@loja.com', senha: 'senhaerrada' }, '172.16.0.1').catch(() => {});
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[LOGIN_FALHA]'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('maria@loja.com'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('172.16.0.1'));
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('senhaerrada'));
+  });
+
+  it('NÃO loga nada quando o login é bem-sucedido', async () => {
+    sql.mockResolvedValueOnce([usuarioLojista]);
+    jest.spyOn(bcrypt, 'compare').mockResolvedValueOnce(true as never);
+    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+
+    await service.login({ email: 'maria@loja.com', senha: '123456' }, IP_TESTE);
+
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });

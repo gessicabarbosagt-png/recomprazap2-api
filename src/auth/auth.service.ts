@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, Inject } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Inject, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { DATABASE_CLIENT } from '../database/database.module';
@@ -6,12 +6,14 @@ import { LoginDto } from './dto/login.dto';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
     private readonly jwtService: JwtService,
   ) {}
 
-  async login(loginDto: LoginDto) {
+  async login(loginDto: LoginDto, ip: string) {
     const { email, senha } = loginDto;
 
     // LEFT JOIN: admin users have loja_id = NULL
@@ -29,11 +31,13 @@ export class AuthService {
     `;
 
     if (!usuario) {
+      this.logger.warn(`[LOGIN_FALHA] email="${email}" ip=${ip} motivo=usuario_nao_encontrado`);
       throw new UnauthorizedException('Credenciais inválidas');
     }
 
     const senhaCorreta = await bcrypt.compare(senha, usuario.senhaHash);
     if (!senhaCorreta) {
+      this.logger.warn(`[LOGIN_FALHA] email="${email}" ip=${ip} motivo=senha_incorreta`);
       throw new UnauthorizedException('Credenciais inválidas');
     }
 
