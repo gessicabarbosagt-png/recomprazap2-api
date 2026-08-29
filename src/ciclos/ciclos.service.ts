@@ -300,18 +300,20 @@ export class CiclosService {
       });
 
       await this.sql`UPDATE lembretes SET status='enviado', enviado_em=NOW() WHERE id=${lembrete.id}`;
-      await this.sql`
+      const [atualizado] = await this.sql`
         UPDATE ciclos_recompra SET
           status_ultimo_envio   = 'sucesso',
+          proxima_notificacao   = NOW() + (intervalo_dias || ' days')::INTERVAL,
           adiado_pelo_cliente   = FALSE,
           data_original_disparo = NULL,
           prazo_solicitado_dias = NULL,
           precisa_revisao       = FALSE,
           updated_at            = NOW()
         WHERE id = ${id} AND loja_id = ${lojaId}
+        RETURNING proxima_notificacao
       `;
 
-      return { ok: true, status: 'sucesso' };
+      return { ok: true, status: 'sucesso', proximaNotificacao: atualizado.proximaNotificacao };
     } catch (err: any) {
       await this.sql`UPDATE lembretes SET status='cancelado' WHERE id=${lembrete.id}`;
       await this.sql`UPDATE ciclos_recompra SET status_ultimo_envio='erro', updated_at=NOW() WHERE id=${id} AND loja_id=${lojaId}`;
