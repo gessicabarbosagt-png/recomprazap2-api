@@ -24,4 +24,21 @@ export class DashboardController {
       ate,
     );
   }
+
+  // GET /api/v1/dashboard/etapas-resumo?dias=30 | ?desde=YYYY-MM-DD&ate=YYYY-MM-DD
+  @Get('etapas-resumo')
+  resumoEtapas(
+    @UsuarioAtual() usuario: any,
+    @Query('dias') dias?: string,
+    @Query('desde') desde?: string,
+    @Query('ate') ate?: string,
+  ) {
+    const diasAtras = dias ? parseInt(dias, 10) : undefined;
+    return this.dashboardService.resumoEtapas(
+      usuario.lojaId,
+      diasAtras,
+      desde,
+      ate,
+    );
+  }
 }

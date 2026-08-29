@@ -340,40 +340,44 @@ export class PedidosService {
   }
 
   async resumoPorPeriodo(lojaId: string, diasAtras?: number, desde?: string, ate?: string) {
+    // Pedidos em etapas intermediárias (ignora período — mesma regra de Represados/Adiados)
+    const [{ pendentes }] = await this.sql`
+      SELECT COUNT(p.id)::int AS pendentes
+      FROM pedidos p
+      JOIN etapas_jornada ej ON ej.id = p.etapa_id
+      WHERE p.loja_id = ${lojaId}
+        AND p.deleted_at IS NULL
+        AND ej.tipo = 'intermediaria'
+    `;
+
     // Período customizado: converte datas BRT para UTC e filtra por intervalo exato
     if (desde && ate) {
       const ini = this.brtIni(desde), fim = this.brtFim(ate);
       const [resumo] = await this.sql`
         SELECT
-          COUNT(*)                                        AS total_pedidos,
-          COUNT(*) FILTER (WHERE status = 'entregue')    AS total_entregues,
-          COUNT(*) FILTER (WHERE status = 'cancelado')   AS total_cancelados,
-          COUNT(*) FILTER (WHERE status = 'pendente')    AS total_pendentes,
-          COALESCE(SUM(quantidade * preco_unitario)
-            FILTER (WHERE status = 'entregue'), 0)        AS receita_estimada
+          COUNT(*)::int                                   AS total,
+          COUNT(*) FILTER (WHERE status = 'entregue')    AS entregues,
+          COUNT(*) FILTER (WHERE status = 'cancelado')   AS cancelados
         FROM pedidos
         WHERE loja_id = ${lojaId}
           AND deleted_at IS NULL
           AND created_at >= ${ini} AND created_at <= ${fim}
       `;
-      return resumo;
+      return { ...resumo, pendentes };
     }
     // Período relativo: N dias a partir de agora (default 30)
     const n = diasAtras ?? 30;
     const [resumo] = await this.sql`
       SELECT
-        COUNT(*)                                        AS total_pedidos,
-        COUNT(*) FILTER (WHERE status = 'entregue')    AS total_entregues,
-        COUNT(*) FILTER (WHERE status = 'cancelado')   AS total_cancelados,
-        COUNT(*) FILTER (WHERE status = 'pendente')    AS total_pendentes,
-        COALESCE(SUM(quantidade * preco_unitario)
-          FILTER (WHERE status = 'entregue'), 0)        AS receita_estimada
+        COUNT(*)::int                                   AS total,
+        COUNT(*) FILTER (WHERE status = 'entregue')    AS entregues,
+        COUNT(*) FILTER (WHERE status = 'cancelado')   AS cancelados
       FROM pedidos
       WHERE loja_id = ${lojaId}
         AND deleted_at IS NULL
         AND created_at >= NOW() - (${n} || ' days')::INTERVAL
     `;
-    return resumo;
+    return { ...resumo, pendentes };
   }
 
   async atualizarValor(id: string, lojaId: string, valor: number) {

@@ -136,4 +136,53 @@ export class DashboardService {
       variacaoReceita: calcVariacao(totalReceita, receitaAnt),
     };
   }
+
+  async resumoEtapas(
+    lojaId: string,
+    diasAtras?: number,
+    desde?: string,
+    ate?: string,
+  ) {
+    let ini: Date;
+    let fim: Date;
+
+    if (desde && ate) {
+      ini = this.brtIni(desde);
+      fim = this.brtFim(ate);
+    } else {
+      const n = diasAtras ?? 30;
+      fim = new Date();
+      ini = new Date(fim.getTime() - n * 86_400_000);
+    }
+
+    const rows = await this.sql`
+      SELECT
+        ej.id,
+        ej.nome,
+        ej.ordem,
+        ej.tipo,
+        COUNT(p.id)::int AS total
+      FROM etapas_jornada ej
+      LEFT JOIN pedidos p ON p.etapa_id = ej.id
+        AND p.loja_id = ${lojaId}
+        AND p.deleted_at IS NULL
+        AND (
+          (p.created_at >= ${ini} AND p.created_at <= ${fim})
+          OR
+          (p.updated_at >= ${ini} AND p.updated_at <= ${fim})
+        )
+      WHERE ej.loja_id = ${lojaId}
+        AND ej.ativo = true
+      GROUP BY ej.id, ej.nome, ej.ordem, ej.tipo
+      ORDER BY ej.ordem
+    `;
+
+    return rows.map((r: any) => ({
+      id:    r.id,
+      nome:  r.nome,
+      ordem: Number(r.ordem),
+      tipo:  r.tipo as string,
+      total: Number(r.total),
+    }));
+  }
 }
