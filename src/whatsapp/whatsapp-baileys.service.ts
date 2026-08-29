@@ -849,25 +849,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    const [ciclo] = await this.sql`
-      SELECT proxima_notificacao, data_original_disparo FROM ciclos_recompra WHERE id = ${cicloId}
-    `;
-
-    // Preserva a data original na primeira vez que é adiado
-    const dataOriginal = ciclo?.dataOriginalDisparo ?? ciclo?.proximaNotificacao ?? new Date();
-    const novaData = new Date();
-    novaData.setDate(novaData.getDate() + dias);
-
-    await this.sql`
-      UPDATE ciclos_recompra SET
-        proxima_notificacao   = ${novaData},
-        adiado_pelo_cliente   = TRUE,
-        data_original_disparo = ${dataOriginal},
-        prazo_solicitado_dias = ${dias},
-        precisa_revisao       = ${precisaRevisao},
-        updated_at            = NOW()
-      WHERE id = ${cicloId}
-    `;
+    const novaData = await this.atualizarCicloAdiado(cicloId, dias, precisaRevisao);
 
     const dataFormatada = novaData.toLocaleDateString('pt-BR', {
       day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'America/Sao_Paulo',
@@ -893,6 +875,30 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     this.diag(session, `[ADIAMENTO] ciclo=${cicloId} → ${dataFormatada} (${dias}d) revisao=${precisaRevisao}`);
     return true;
+  }
+
+  // Lógica central de adiamento — usada pelo fluxo estruturado (opção "2") e pela
+  // detecção de linguagem natural, garantindo que os mesmos 4 campos sejam sempre setados.
+  private async atualizarCicloAdiado(cicloId: string, dias: number, precisaRevisao = false): Promise<Date> {
+    const [ciclo] = await this.sql`
+      SELECT proxima_notificacao, data_original_disparo FROM ciclos_recompra WHERE id = ${cicloId}
+    `;
+    const dataOriginal = ciclo?.dataOriginalDisparo ?? ciclo?.proximaNotificacao ?? new Date();
+    const novaData = new Date();
+    novaData.setDate(novaData.getDate() + dias);
+
+    await this.sql`
+      UPDATE ciclos_recompra SET
+        proxima_notificacao   = ${novaData},
+        adiado_pelo_cliente   = TRUE,
+        data_original_disparo = ${dataOriginal},
+        prazo_solicitado_dias = ${dias},
+        precisa_revisao       = ${precisaRevisao},
+        updated_at            = NOW()
+      WHERE id = ${cicloId}
+    `;
+
+    return novaData;
   }
 
   // ----------------------------------------------------------------
@@ -1005,11 +1011,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
       case 'adiar_lembrete': {
         const dias = parseInt(String(acoParams?.dias ?? 7), 10);
-        await this.sql`
-          UPDATE ciclos_recompra
-          SET proxima_notificacao = NOW() + (${dias} * INTERVAL '1 day'), updated_at = NOW()
-          WHERE id = ${lembrete.cicloId}
-        `;
+        await this.atualizarCicloAdiado(lembrete.cicloId, dias);
         await this.sql`UPDATE lembretes SET status='respondido', updated_at=NOW() WHERE id=${lembrete.id}`;
         break;
       }
