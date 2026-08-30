@@ -17,12 +17,14 @@ export class PedidosController {
     return this.pedidosService.criar(usuario.lojaId, dto);
   }
 
-  // GET /api/v1/pedidos?status=pendente&statusJornada=comprou&dias=30&desde=2025-01-01&ate=2025-01-31
+  // GET /api/v1/pedidos?status=pendente&statusJornada=comprou&etapaId=uuid&dias=30&desde=2025-01-01&ate=2025-01-31
+  // Sem filtro de etapa: retorna apenas pedidos com etapa do tipo final_comprou (padrão)
   @Get()
   listar(
     @UsuarioAtual() usuario: any,
     @Query('status') status?: string,
     @Query('statusJornada') statusJornada?: string,
+    @Query('etapaId') etapaId?: string,
     @Query('dias') dias?: string,
     @Query('desde') desde?: string,
     @Query('ate') ate?: string,
@@ -31,6 +33,7 @@ export class PedidosController {
       usuario.lojaId,
       status,
       statusJornada,
+      etapaId,
       dias ? parseInt(dias, 10) : undefined,
       desde,
       ate,

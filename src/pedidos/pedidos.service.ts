@@ -69,9 +69,9 @@ export class PedidosService {
   private brtIni(data: string): Date { return new Date(data + 'T00:00:00-03:00'); }
   private brtFim(data: string): Date { return new Date(data + 'T23:59:59.999-03:00'); }
 
-  async listar(lojaId: string, status?: string, statusJornada?: string, diasAtras?: number, desde?: string, ate?: string) {
-    // Pedidos confirmados filtram por confirmado_em; demais por created_at
-    const usarConfirmadoEm = statusJornada === 'comprou';
+  async listar(lojaId: string, status?: string, statusJornada?: string, etapaId?: string, diasAtras?: number, desde?: string, ate?: string) {
+    // Use confirmado_em quando: statusJornada=comprou explícito OU padrão (sem filtro = final_comprou)
+    const usarConfirmadoEm = !etapaId && (statusJornada === 'comprou' || !statusJornada);
 
     let filtroPeriodo: any;
     if (diasAtras) {
@@ -91,6 +91,19 @@ export class PedidosService {
     } else {
       filtroPeriodo = this.sql``;
     }
+
+    // Filtro de etapa:
+    // - etapaId fornecido: filtra por p.etapa_id = UUID
+    // - statusJornada fornecido (legado): filtra por status_jornada string
+    // - nenhum dos dois: padrão → só etapas do tipo final_comprou
+    const filtroEtapa = etapaId
+      ? this.sql`AND p.etapa_id = ${etapaId}`
+      : statusJornada
+      ? this.sql`AND p.status_jornada = ${statusJornada}`
+      : this.sql`AND EXISTS (
+          SELECT 1 FROM etapas_jornada ej
+          WHERE ej.id = p.etapa_id AND ej.tipo = 'final_comprou'
+        )`;
 
     return this.sql`
       SELECT
@@ -117,8 +130,8 @@ export class PedidosService {
       LEFT JOIN produtos pr ON pr.id = p.produto_id
       WHERE p.loja_id = ${lojaId}
         AND p.deleted_at IS NULL
-        ${status        ? this.sql`AND p.status         = ${status}`        : this.sql``}
-        ${statusJornada ? this.sql`AND p.status_jornada = ${statusJornada}` : this.sql``}
+        ${status ? this.sql`AND p.status = ${status}` : this.sql``}
+        ${filtroEtapa}
         ${filtroPeriodo}
       ORDER BY p.created_at DESC
       LIMIT 200
