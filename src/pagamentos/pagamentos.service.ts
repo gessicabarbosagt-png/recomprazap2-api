@@ -67,28 +67,34 @@ export class PagamentosService {
 
     // Cancela assinatura anterior se existir
     if (loja.mpSubscriptionId) {
-      await this.cancelarPreapprovalNoMP(loja.mpSubscriptionId).catch(() => {});
+      this.logger.log(`[MP] cancelando preapproval antigo: ${loja.mpSubscriptionId}`);
+      await this.cancelarPreapprovalNoMP(loja.mpSubscriptionId).catch((e: any) => {
+        this.logger.warn(`[MP] falha ao cancelar preapproval antigo (ignorada): ${e?.message} | upstream: ${JSON.stringify(e?.response?.data)}`);
+      });
     }
 
     const startDate = new Date();
     startDate.setHours(startDate.getHours() + 1);
 
+    const preapprovalPayload = {
+      reason: 'Mensalidade RecompraZap',
+      auto_recurring: {
+        frequency: 1,
+        frequency_type: 'months',
+        start_date: startDate.toISOString(),
+        transaction_amount: Number(loja.valorMensalidade),
+        currency_id: 'BRL',
+      },
+      card_token_id: dto.cardToken,
+      payer_email: dto.payerEmail,
+      status: 'authorized',
+      back_url: `${this.frontendUrl}/plano`,
+    };
+    this.logger.log(`[MP] criando preapproval: ${JSON.stringify({ ...preapprovalPayload, card_token_id: dto.cardToken?.slice(0, 8) + '...' })}`);
+
     const { data } = await axios.post(
       `${this.mpApiBase}/preapproval`,
-      {
-        reason: 'Mensalidade RecompraZap',
-        auto_recurring: {
-          frequency: 1,
-          frequency_type: 'months',
-          start_date: startDate.toISOString(),
-          transaction_amount: Number(loja.valorMensalidade),
-          currency_id: 'BRL',
-        },
-        card_token_id: dto.cardToken,
-        payer_email: dto.payerEmail,
-        status: 'authorized',
-        back_url: `${this.frontendUrl}/plano`,
-      },
+      preapprovalPayload,
       { headers: this.mpHeaders() },
     );
 
