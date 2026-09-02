@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import helmet from 'helmet';
+import * as cookieParser from 'cookie-parser';
 
 const REQUIRED_ENV_VARS = ['ENCRYPTION_KEY', 'MP_WEBHOOK_SECRET', 'JWT_SECRET'];
 
@@ -17,6 +18,8 @@ async function bootstrap() {
   // Railway (e outros reverse-proxies) encaminha o IP real do cliente via X-Forwarded-For.
   // Sem isso, req.ip retorna o IP interno do proxy — o throttler nunca acumula hits por usuário.
   app.getHttpAdapter().getInstance().set('trust proxy', 1);
+
+  app.use(cookieParser());
 
   app.use(
     helmet({
@@ -44,6 +47,7 @@ async function bootstrap() {
     'http://localhost:3000',
     'http://localhost:3001',
     'https://recomprazap2-web.vercel.app',
+    'https://app.recomprazap.com.br',
     ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : []),
   ];
 
@@ -56,7 +60,7 @@ async function bootstrap() {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   });
 
   const port = process.env.PORT ?? 3000;

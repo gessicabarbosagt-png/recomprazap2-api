@@ -1,8 +1,9 @@
-import { Injectable, UnauthorizedException, Inject, Logger } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Inject, Logger, NotFoundException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { DATABASE_CLIENT } from '../database/database.module';
 import { LoginDto } from './dto/login.dto';
+import { UsuarioLogado } from '../common/decorators/usuario-atual.decorator';
 
 @Injectable()
 export class AuthService {
@@ -60,6 +61,28 @@ export class AuthService {
           ? { id: usuario.lojaId, nome: usuario.lojaNome }
           : null,
       },
+    };
+  }
+
+  async getMe(payload: UsuarioLogado) {
+    const [usuario] = await this.sql`
+      SELECT u.id, u.nome, u.email, u.perfil, u.role, u.loja_id, l.nome as loja_nome
+      FROM usuarios u
+      LEFT JOIN lojas l ON l.id = u.loja_id
+      WHERE u.id = ${payload.id}
+        AND u.deleted_at IS NULL
+        AND u.ativo = TRUE
+    `;
+
+    if (!usuario) throw new NotFoundException('Usuário não encontrado');
+
+    return {
+      id: usuario.id,
+      nome: usuario.nome,
+      email: usuario.email,
+      perfil: usuario.perfil,
+      role: usuario.role ?? 'lojista',
+      loja: usuario.lojaId ? { id: usuario.lojaId, nome: usuario.lojaNome } : null,
     };
   }
 }

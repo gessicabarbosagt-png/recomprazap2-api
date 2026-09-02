@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { ThrottlerExceptionFilter } from './common/filters/throttler-exception.filter';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { CsrfGuard } from './common/guards/csrf.guard';
 import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './auth/auth.module';
 import { LojasModule } from './lojas/lojas.module';
@@ -76,6 +77,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
     { provide: APP_FILTER, useClass: HttpExceptionFilter },
     { provide: APP_FILTER, useClass: ThrottlerExceptionFilter },
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: CsrfGuard },
   ],
 })
 export class AppModule {}

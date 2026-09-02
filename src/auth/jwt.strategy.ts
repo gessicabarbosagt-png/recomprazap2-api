@@ -11,7 +11,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     @Inject(DATABASE_CLIENT) private readonly sql: any,
   ) {
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        // Cookie HttpOnly tem prioridade (fluxo web principal)
+        (req) => (req?.cookies as Record<string, string> | undefined)?.recomprazap_token ?? null,
+        // Bearer token como fallback (Postman, scripts, acesso direto à API)
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+      ]),
       ignoreExpiration: false,
       secretOrKey: config.get<string>('JWT_SECRET'),
     });
