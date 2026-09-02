@@ -38,9 +38,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
       ? exception.stack ?? exception.message
       : String(exception);
 
+    // Para erros de APIs externas (Axios), loga também o body da resposta upstream
+    // para evitar que a causa real fique oculta atrás de "Request failed with status 4xx"
+    const upstreamBody = (exception as any)?.response?.data;
+    const upstreamStr  = upstreamBody ? `\nUpstream response: ${JSON.stringify(upstreamBody)}` : '';
+
     this.logger.error(
       `[${req.method}] ${req.url} → ${status}`,
-      errorDetail,
+      errorDetail + upstreamStr,
     );
 
     if (isProd) {
