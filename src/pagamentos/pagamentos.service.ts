@@ -87,7 +87,6 @@ export class PagamentosService {
       },
       card_token_id: dto.cardToken,
       payer_email: dto.payerEmail,
-      status: 'authorized',
       back_url: `${this.frontendUrl}/plano`,
     };
     this.logger.log(`[MP] criando preapproval: ${JSON.stringify({ ...preapprovalPayload, card_token_id: dto.cardToken?.slice(0, 8) + '...' })}`);
