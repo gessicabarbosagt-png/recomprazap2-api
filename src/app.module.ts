@@ -28,6 +28,7 @@ import { PlanosModule } from './planos/planos.module';
 import { EmailModule } from './email/email.module';
 import { AtividadeLogModule } from './atividade-log/atividade-log.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { OnboardingModule } from './onboarding/onboarding.module';
 
 @Module({
   imports: [
@@ -69,6 +70,9 @@ import { DashboardModule } from './dashboard/dashboard.module';
     // Dashboard e log de atividade
     AtividadeLogModule,
     DashboardModule,
+
+    // Onboarding
+    OnboardingModule,
   ],
   providers: [
     // Ordem importa: NestJS aplica filtros do último para o primeiro registrado.
