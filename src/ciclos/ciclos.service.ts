@@ -4,24 +4,35 @@ import {
   Logger,
   NotFoundException,
   ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import { DATABASE_CLIENT } from '../database/database.module';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { AtividadeLogService } from '../atividade-log/atividade-log.service';
 
-// DTO inline — idealmente ficaria em dto/criar-ciclo.dto.ts
-// Mantido aqui para facilitar a leitura do service
 export interface CriarCicloDto {
   clienteId: string;
-  produtoId: string;
+  produtoIds: string[];   // múltiplos produtos por ciclo
   intervaloDias: number;
   quantidade?: string;
+  horarioEnvio?: string;  // ex: '09:00' — padrão '09:00' se omitido
 }
 
 export interface AtualizarCicloDto {
   intervaloDias?: number;
   quantidade?: string;
   ativo?: boolean;
+  horarioEnvio?: string;
+  produtoIds?: string[];  // se fornecido, substitui todos os produtos do ciclo
+}
+
+// Formata lista de nomes de produtos para mensagem natural.
+// Ex: ["A"] → "A" | ["A","B"] → "A e B" | ["A","B","C"] → "A, B e C"
+function formatarNomesProdutos(nomes: string[]): string {
+  if (nomes.length === 0) return 'produto';
+  if (nomes.length === 1) return nomes[0];
+  if (nomes.length === 2) return `${nomes[0]} e ${nomes[1]}`;
+  return nomes.slice(0, -1).join(', ') + ' e ' + nomes[nomes.length - 1];
 }
 
 @Injectable()
@@ -34,7 +45,7 @@ export class CiclosService {
     private readonly atividadeLog: AtividadeLogService,
   ) {}
 
-  // Lista todos os ciclos ativos de uma loja, com dados do cliente e produto
+  // Lista todos os ciclos ativos de uma loja, com dados do cliente e produtos
   async listar(lojaId: string) {
     return this.sql`
       SELECT
@@ -45,19 +56,20 @@ export class CiclosService {
         cr.proxima_notificacao,
         cr.ultima_compra,
         cr.status_ultimo_envio,
+        cr.horario_envio,
         cr.created_at,
-        -- Dados do cliente (para não precisar de uma segunda requisição no frontend)
-        c.id   AS cliente_id,
-        c.nome AS cliente_nome,
-        c.telefone AS cliente_telefone,
-        -- Dados do produto
-        p.id   AS produto_id,
-        p.nome AS produto_nome,
-        p.preco AS produto_preco,
-        p.unidade AS produto_unidade
+        c.id        AS cliente_id,
+        c.nome      AS cliente_nome,
+        c.telefone  AS cliente_telefone,
+        ARRAY(
+          SELECT JSON_BUILD_OBJECT('id', p.id, 'nome', p.nome)
+          FROM ciclo_produtos cp
+          JOIN produtos p ON p.id = cp.produto_id
+          WHERE cp.ciclo_id = cr.id
+          ORDER BY p.nome
+        ) AS produtos
       FROM ciclos_recompra cr
       JOIN clientes c ON c.id = cr.cliente_id
-      JOIN produtos  p ON p.id = cr.produto_id
       WHERE cr.loja_id = ${lojaId}
         AND cr.deleted_at IS NULL
       ORDER BY cr.proxima_notificacao ASC NULLS LAST
@@ -69,95 +81,147 @@ export class CiclosService {
     const [ciclo] = await this.sql`
       SELECT
         cr.*,
-        c.nome AS cliente_nome,
-        c.telefone AS cliente_telefone,
-        p.nome AS produto_nome,
-        p.preco AS produto_preco
+        c.nome      AS cliente_nome,
+        c.telefone  AS cliente_telefone,
+        ARRAY(
+          SELECT JSON_BUILD_OBJECT('id', p.id, 'nome', p.nome)
+          FROM ciclo_produtos cp
+          JOIN produtos p ON p.id = cp.produto_id
+          WHERE cp.ciclo_id = cr.id
+          ORDER BY p.nome
+        ) AS produtos
       FROM ciclos_recompra cr
       JOIN clientes c ON c.id = cr.cliente_id
-      JOIN produtos  p ON p.id = cr.produto_id
       WHERE cr.id = ${id}
         AND cr.loja_id = ${lojaId}
         AND cr.deleted_at IS NULL
     `;
 
-    if (!ciclo) {
-      throw new NotFoundException('Ciclo de recompra não encontrado');
-    }
-
+    if (!ciclo) throw new NotFoundException('Ciclo de recompra não encontrado');
     return ciclo;
   }
 
-  // Cria um novo ciclo e calcula a primeira próxima_notificacao (hoje + intervalo_dias)
+  // Cria um novo ciclo com um ou mais produtos
   async criar(dto: CriarCicloDto, lojaId: string) {
-    // Garante que cliente e produto pertencem a esta loja
+    if (!dto.produtoIds?.length) {
+      throw new BadRequestException('Informe pelo menos um produto');
+    }
+
     const [cliente] = await this.sql`
       SELECT id FROM clientes
       WHERE id = ${dto.clienteId} AND loja_id = ${lojaId} AND deleted_at IS NULL
     `;
     if (!cliente) throw new NotFoundException('Cliente não encontrado');
 
-    const [produto] = await this.sql`
+    // Valida que todos os produtos pertencem à loja
+    const produtosValidos = await this.sql`
       SELECT id FROM produtos
-      WHERE id = ${dto.produtoId} AND loja_id = ${lojaId} AND deleted_at IS NULL
+      WHERE id = ANY(${dto.produtoIds}) AND loja_id = ${lojaId} AND deleted_at IS NULL
     `;
-    if (!produto) throw new NotFoundException('Produto não encontrado');
+    if (produtosValidos.length !== dto.produtoIds.length) {
+      throw new NotFoundException('Um ou mais produtos não encontrados');
+    }
 
-    // Evita duplicidade: um cliente não pode ter dois ciclos do mesmo produto
-    const [existente] = await this.sql`
-      SELECT id FROM ciclos_recompra
-      WHERE cliente_id = ${dto.clienteId}
-        AND produto_id = ${dto.produtoId}
-        AND loja_id = ${lojaId}
-        AND deleted_at IS NULL
+    // Verifica conflito: algum dos produtos já está em outro ciclo ativo deste cliente
+    const [conflito] = await this.sql`
+      SELECT cr.id FROM ciclos_recompra cr
+      JOIN ciclo_produtos cp ON cp.ciclo_id = cr.id
+      WHERE cr.cliente_id = ${dto.clienteId}
+        AND cp.produto_id = ANY(${dto.produtoIds})
+        AND cr.loja_id = ${lojaId}
+        AND cr.deleted_at IS NULL
     `;
-    if (existente) {
+    if (conflito) {
       throw new ConflictException(
-        'Este cliente já tem um ciclo ativo para esse produto',
+        'Um ou mais produtos já fazem parte de um ciclo ativo para este cliente',
       );
     }
 
-    // proxima_notificacao = agora + intervalo_dias
-    // O lembrete será disparado nessa data pelo worker BullMQ
+    const horarioEnvio = dto.horarioEnvio ?? '09:00';
+
     const [novoCiclo] = await this.sql`
       INSERT INTO ciclos_recompra
-        (loja_id, cliente_id, produto_id, intervalo_dias, quantidade, proxima_notificacao)
+        (loja_id, cliente_id, produto_id, intervalo_dias, quantidade, horario_envio, proxima_notificacao)
       VALUES (
         ${lojaId},
         ${dto.clienteId},
-        ${dto.produtoId},
+        ${dto.produtoIds[0]},
         ${dto.intervaloDias},
         ${dto.quantidade ?? null},
+        ${horarioEnvio},
         NOW() + (${dto.intervaloDias} || ' days')::INTERVAL
       )
-      RETURNING *
+      RETURNING id
     `;
 
-    // Busca nomes para a descrição do log (não bloqueia o retorno)
+    // Insere todos os produtos na tabela de junção
+    for (const produtoId of dto.produtoIds) {
+      await this.sql`
+        INSERT INTO ciclo_produtos (ciclo_id, produto_id) VALUES (${novoCiclo.id}, ${produtoId})
+        ON CONFLICT DO NOTHING
+      `;
+    }
+
     void (async () => {
       try {
-        const [info] = await this.sql`
-          SELECT c.nome AS cliente_nome, p.nome AS produto_nome
-          FROM ciclos_recompra cr
-          JOIN clientes c ON c.id = cr.cliente_id
-          JOIN produtos  p ON p.id = cr.produto_id
-          WHERE cr.id = ${novoCiclo.id}
-        `;
-        if (info) {
-          void this.atividadeLog.registrar(lojaId, 'ciclo_criado',
-            `Ciclo de ${info.produtoNome} criado para ${info.clienteNome} (${dto.intervaloDias}d)`);
-        }
+        const nomes = produtosValidos.map((p: any) => p.nome ?? p.id);
+        void this.atividadeLog.registrar(lojaId, 'ciclo_criado',
+          `Ciclo de ${formatarNomesProdutos(nomes)} criado para cliente (${dto.intervaloDias}d)`);
       } catch { /* silent */ }
     })();
 
-    return novoCiclo;
+    return this.buscarPorId(novoCiclo.id, lojaId);
   }
 
-  // Atualiza intervalo ou quantidade. Se o intervalo mudar, recalcula proxima_notificacao.
+  // Atualiza intervalo, quantidade, ativo, horário e/ou produtos do ciclo
   async atualizar(id: string, dto: AtualizarCicloDto, lojaId: string) {
     const ciclo = await this.buscarPorId(id, lojaId);
 
-    // Se o intervalo mudou, recalcula a próxima notificação a partir de agora
+    // Se fornecer novos produtos, valida e substitui
+    if (dto.produtoIds !== undefined) {
+      if (!dto.produtoIds.length) {
+        throw new BadRequestException('Informe pelo menos um produto');
+      }
+      const produtosValidos = await this.sql`
+        SELECT id FROM produtos
+        WHERE id = ANY(${dto.produtoIds}) AND loja_id = ${lojaId} AND deleted_at IS NULL
+      `;
+      if (produtosValidos.length !== dto.produtoIds.length) {
+        throw new NotFoundException('Um ou mais produtos não encontrados');
+      }
+
+      // Verifica conflito em outros ciclos deste cliente
+      const [conflito] = await this.sql`
+        SELECT cr.id FROM ciclos_recompra cr
+        JOIN ciclo_produtos cp ON cp.ciclo_id = cr.id
+        WHERE cr.cliente_id = ${ciclo.clienteId}
+          AND cp.produto_id = ANY(${dto.produtoIds})
+          AND cr.loja_id = ${lojaId}
+          AND cr.id != ${id}
+          AND cr.deleted_at IS NULL
+      `;
+      if (conflito) {
+        throw new ConflictException(
+          'Um ou mais produtos já fazem parte de outro ciclo ativo para este cliente',
+        );
+      }
+
+      // Substitui os produtos na tabela de junção
+      await this.sql`DELETE FROM ciclo_produtos WHERE ciclo_id = ${id}`;
+      for (const produtoId of dto.produtoIds) {
+        await this.sql`
+          INSERT INTO ciclo_produtos (ciclo_id, produto_id) VALUES (${id}, ${produtoId})
+          ON CONFLICT DO NOTHING
+        `;
+      }
+
+      // Mantém produto_id legado sincronizado com o primeiro produto
+      await this.sql`
+        UPDATE ciclos_recompra SET produto_id = ${dto.produtoIds[0]}, updated_at = NOW()
+        WHERE id = ${id} AND loja_id = ${lojaId}
+      `;
+    }
+
     const novaProximaNotificacao = dto.intervaloDias && dto.intervaloDias !== ciclo.intervaloDias
       ? this.sql`NOW() + (${dto.intervaloDias} || ' days')::INTERVAL`
       : this.sql`${ciclo.proximaNotificacao}`;
@@ -167,6 +231,7 @@ export class CiclosService {
         intervalo_dias      = COALESCE(${dto.intervaloDias ?? null}, intervalo_dias),
         quantidade          = COALESCE(${dto.quantidade ?? null}, quantidade),
         ativo               = COALESCE(${dto.ativo ?? null}, ativo),
+        horario_envio       = COALESCE(${dto.horarioEnvio ?? null}, horario_envio),
         proxima_notificacao = ${novaProximaNotificacao},
         updated_at          = NOW()
       WHERE id = ${id} AND loja_id = ${lojaId}
@@ -176,8 +241,6 @@ export class CiclosService {
     return atualizado;
   }
 
-  // Registra uma compra: atualiza ultima_compra e empurra a proxima_notificacao para frente
-  // Chamado internamente quando um pedido é confirmado
   async registrarCompra(cicloId: string, lojaId: string) {
     const [atualizado] = await this.sql`
       UPDATE ciclos_recompra SET
@@ -189,15 +252,10 @@ export class CiclosService {
         AND deleted_at IS NULL
       RETURNING *
     `;
-
-    if (!atualizado) {
-      throw new NotFoundException('Ciclo não encontrado para registrar compra');
-    }
-
+    if (!atualizado) throw new NotFoundException('Ciclo não encontrado para registrar compra');
     return atualizado;
   }
 
-  // Lista ciclos adiados a pedido do cliente
   async listarAdiados(lojaId: string) {
     return this.sql`
       SELECT
@@ -210,10 +268,15 @@ export class CiclosService {
         c.id        AS cliente_id,
         c.nome      AS cliente_nome,
         c.telefone  AS cliente_telefone,
-        p.nome      AS produto_nome
+        ARRAY(
+          SELECT p.nome
+          FROM ciclo_produtos cp
+          JOIN produtos p ON p.id = cp.produto_id
+          WHERE cp.ciclo_id = cr.id
+          ORDER BY p.nome
+        ) AS produto_nomes
       FROM ciclos_recompra cr
       JOIN clientes c ON c.id = cr.cliente_id
-      JOIN produtos  p ON p.id = cr.produto_id
       WHERE cr.loja_id = ${lojaId}
         AND cr.adiado_pelo_cliente = TRUE
         AND cr.deleted_at IS NULL
@@ -221,7 +284,6 @@ export class CiclosService {
     `;
   }
 
-  // Cancela o adiamento, voltando para a data original
   async cancelarAdiamento(id: string, lojaId: string) {
     const [ciclo] = await this.sql`
       SELECT data_original_disparo FROM ciclos_recompra
@@ -241,7 +303,6 @@ export class CiclosService {
     `;
   }
 
-  // Edita manualmente a data de disparo de um ciclo adiado
   async editarDataAdiado(id: string, lojaId: string, novaData: Date) {
     const [ciclo] = await this.sql`
       SELECT id FROM ciclos_recompra WHERE id = ${id} AND loja_id = ${lojaId} AND deleted_at IS NULL
@@ -256,31 +317,39 @@ export class CiclosService {
     `;
   }
 
-  // Soft delete — desativa o ciclo sem apagar histórico
   async remover(id: string, lojaId: string) {
     await this.buscarPorId(id, lojaId);
-
     await this.sql`
       UPDATE ciclos_recompra SET
         deleted_at = NOW(),
-        ativo = FALSE,
+        ativo      = FALSE,
         updated_at = NOW()
       WHERE id = ${id} AND loja_id = ${lojaId}
     `;
   }
 
-  // Dispara lembrete imediato para um ciclo específico
+  // Dispara lembrete imediato para um ciclo — ação manual, sem restrição de horário
   async enviarLembreteImediato(id: string, lojaId: string) {
     const [ciclo] = await this.sql`
-      SELECT cr.id, cr.quantidade,
-             c.nome  AS cliente_nome,  c.telefone AS cliente_telefone,
-             p.nome  AS produto_nome,  p.unidade  AS produto_unidade
+      SELECT
+        cr.id,
+        cr.quantidade,
+        c.nome  AS cliente_nome,
+        c.telefone AS cliente_telefone,
+        ARRAY(
+          SELECT p.nome
+          FROM ciclo_produtos cp
+          JOIN produtos p ON p.id = cp.produto_id
+          WHERE cp.ciclo_id = cr.id
+          ORDER BY p.nome
+        ) AS produto_nomes
       FROM ciclos_recompra cr
       JOIN clientes c ON c.id = cr.cliente_id
-      JOIN produtos  p ON p.id = cr.produto_id
       WHERE cr.id = ${id} AND cr.loja_id = ${lojaId} AND cr.deleted_at IS NULL
     `;
     if (!ciclo) throw new NotFoundException('Ciclo não encontrado');
+
+    const produtoNome = formatarNomesProdutos(ciclo.produtoNomes ?? []);
 
     const [lembrete] = await this.sql`
       INSERT INTO lembretes (loja_id, ciclo_id, status, agendado_para)
@@ -290,12 +359,11 @@ export class CiclosService {
 
     try {
       await this.whatsappService.enviarLembrete({
-        telefone:     ciclo.clienteTelefone,
-        clienteNome:  ciclo.clienteNome,
-        produtoNome:  ciclo.produtoNome,
-        quantidade:   ciclo.quantidade ?? undefined,
-        unidade:      ciclo.produtoUnidade ?? undefined,
-        lembreteId:   lembrete.id,
+        telefone:    ciclo.clienteTelefone,
+        clienteNome: ciclo.clienteNome,
+        produtoNome,
+        quantidade:  ciclo.quantidade ?? undefined,
+        lembreteId:  lembrete.id,
         lojaId,
       });
 
@@ -321,14 +389,11 @@ export class CiclosService {
     }
   }
 
-  // Dispara todos os ciclos vencidos de forma síncrona e retorna resultado por ciclo
   async dispararTodos(lojaId: string) {
     const ciclos = await this.sql`
-      SELECT cr.id,
-             c.nome AS cliente_nome
+      SELECT cr.id, c.nome AS cliente_nome
       FROM ciclos_recompra cr
       JOIN clientes c ON c.id = cr.cliente_id
-      JOIN produtos  p ON p.id = cr.produto_id
       WHERE cr.loja_id = ${lojaId}
         AND cr.ativo = TRUE
         AND cr.deleted_at IS NULL
@@ -353,8 +418,7 @@ export class CiclosService {
     }
 
     const sucesso = resultados.filter((r) => r.ok).length;
-    const falhas = resultados.filter((r) => !r.ok).length;
-
+    const falhas  = resultados.filter((r) => !r.ok).length;
     return { total: ciclos.length, sucesso, falhas, resultados };
   }
 }

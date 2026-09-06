@@ -54,6 +54,7 @@ export class AgendadorService implements OnApplicationBootstrap {
     // A query só retorna ciclos que:
     //   - estão ativos e não deletados
     //   - têm proxima_notificacao no passado (já é hora de notificar)
+    //   - o horario_envio do ciclo (BRT) já foi atingido (ou não foi configurado)
     //   - não têm nenhum lembrete 'agendado' ou 'enviado' em aberto
     //     (evita duplicar notificação se o cron rodar duas vezes antes do job executar)
     const ciclos = await this.sql`
@@ -66,23 +67,31 @@ export class AgendadorService implements OnApplicationBootstrap {
         l.horario_abertura,
         l.horario_fechamento,
         l.dias_funcionamento,
-        c.nome         AS cliente_nome,
+        c.nome          AS cliente_nome,
         c.whatsapp_nome AS whatsapp_nome,
-        c.telefone     AS cliente_telefone,
+        c.telefone      AS cliente_telefone,
         c.consentimento_whatsapp,
-        p.nome         AS produto_nome,
-        p.unidade      AS produto_unidade,
-        cr.quantidade
+        cr.quantidade,
+        ARRAY(
+          SELECT p.nome
+          FROM ciclo_produtos cp
+          JOIN produtos p ON p.id = cp.produto_id
+          WHERE cp.ciclo_id = cr.id
+          ORDER BY p.nome
+        ) AS produto_nomes
       FROM ciclos_recompra cr
       JOIN lojas    l ON l.id = cr.loja_id
       JOIN clientes c ON c.id = cr.cliente_id
-      JOIN produtos p ON p.id = cr.produto_id
       WHERE cr.ativo = TRUE
         AND cr.deleted_at IS NULL
         AND l.ativa = TRUE
         AND l.status_assinatura != 'cancelada'
         AND c.consentimento_whatsapp = TRUE   -- LGPD: só envia com consentimento
         AND cr.proxima_notificacao::date <= CURRENT_DATE
+        AND (
+          cr.horario_envio IS NULL
+          OR (NOW() AT TIME ZONE 'America/Sao_Paulo')::TIME >= cr.horario_envio
+        )
         AND NOT EXISTS (
           SELECT 1 FROM lembretes
           WHERE ciclo_id = cr.id
@@ -184,31 +193,34 @@ export class AgendadorService implements OnApplicationBootstrap {
   // ----------------------------------------------------------------
 
   private async agendarJobLembrete(ciclo: any) {
-    // Primeiro cria o registro do lembrete no banco (status: agendado)
     const [lembrete] = await this.sql`
       INSERT INTO lembretes (loja_id, ciclo_id, agendado_para, status, tentativa)
       VALUES (${ciclo.lojaId}, ${ciclo.cicloId}, NOW(), 'agendado', 1)
       RETURNING id
     `;
 
-    // Depois enfileira o job no BullMQ passando tudo que o worker vai precisar
-    // para não ter que fazer outra query no banco durante a execução
+    const nomes: string[] = ciclo.produtoNomes ?? [];
+    const produtoNome = nomes.length === 0 ? 'produto'
+      : nomes.length === 1 ? nomes[0]
+      : nomes.length === 2 ? `${nomes[0]} e ${nomes[1]}`
+      : nomes.slice(0, -1).join(', ') + ' e ' + nomes[nomes.length - 1];
+
     await this.filaLembretes.add(
       JOB_ENVIAR_LEMBRETE,
       {
-        lembreteId:     lembrete.id,
-        lojaId:         ciclo.lojaId,
-        cicloId:        ciclo.cicloId,
+        lembreteId:          lembrete.id,
+        lojaId:              ciclo.lojaId,
+        cicloId:             ciclo.cicloId,
         clienteNome:         ciclo.clienteNome,
         clienteWhatsappNome: ciclo.whatsappNome ?? null,
         clienteTelefone:     ciclo.clienteTelefone,
-        produtoNome:    ciclo.produtoNome,
-        produtoUnidade: ciclo.produtoUnidade,
-        quantidade:     ciclo.quantidade,
-        horarioAbertura:    ciclo.horarioAbertura,
-        horarioFechamento:  ciclo.horarioFechamento,
-        diasFuncionamento:  ciclo.diasFuncionamento,
-        horasParaRetry:     ciclo.horasParaRetry,
+        produtoNome,
+        produtoUnidade:      null,
+        quantidade:          ciclo.quantidade,
+        horarioAbertura:     ciclo.horarioAbertura,
+        horarioFechamento:   ciclo.horarioFechamento,
+        diasFuncionamento:   ciclo.diasFuncionamento,
+        horasParaRetry:      ciclo.horasParaRetry,
       },
       {
         attempts: 3,                                    // tenta até 3x em caso de erro de rede
