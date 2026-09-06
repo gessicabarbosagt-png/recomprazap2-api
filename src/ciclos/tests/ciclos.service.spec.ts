@@ -93,19 +93,20 @@ describe('CiclosService', () => {
   describe('criar', () => {
     const dto = {
       clienteId: CLIENTE_ID,
-      produtoId: PRODUTO_ID,
+      produtos: [{ id: PRODUTO_ID, quantidade: 2, unidade: 'kg' as const }],
       intervaloDias: 30,
-      quantidade: 5,
     };
 
     it('cria o ciclo com sucesso quando cliente, produto existem e não há duplicata', async () => {
-      const novoCiclo = { id: CICLO_ID, ...dto, lojaId: LOJA_ID };
+      const novoCiclo = { id: CICLO_ID, clienteId: CLIENTE_ID, lojaId: LOJA_ID, intervaloDias: 30 };
 
       sql
-        .mockResolvedValueOnce([{ id: CLIENTE_ID }]) // cliente existe
-        .mockResolvedValueOnce([{ id: PRODUTO_ID }]) // produto existe
-        .mockResolvedValueOnce([])                   // sem ciclo duplicado
-        .mockResolvedValueOnce([novoCiclo]);          // INSERT retorna o novo ciclo
+        .mockResolvedValueOnce([{ id: CLIENTE_ID }])           // cliente existe
+        .mockResolvedValueOnce([{ id: PRODUTO_ID, nome: 'P' }]) // produtos válidos
+        .mockResolvedValueOnce([])                              // sem ciclo duplicado
+        .mockResolvedValueOnce([{ id: CICLO_ID }])             // INSERT ciclo
+        .mockResolvedValueOnce([])                             // INSERT ciclo_produtos
+        .mockResolvedValueOnce([novoCiclo]);                    // buscarPorId
 
       const resultado = await service.criar(dto, LOJA_ID);
       expect(resultado).toEqual(novoCiclo);
@@ -129,26 +130,32 @@ describe('CiclosService', () => {
 
     it('lança ConflictException quando já existe ciclo para esse cliente+produto', async () => {
       sql
-        .mockResolvedValueOnce([{ id: CLIENTE_ID }])  // cliente ok
-        .mockResolvedValueOnce([{ id: PRODUTO_ID }])  // produto ok
-        .mockResolvedValueOnce([{ id: CICLO_ID }]);   // ciclo duplicado encontrado
+        .mockResolvedValueOnce([{ id: CLIENTE_ID }])           // cliente ok
+        .mockResolvedValueOnce([{ id: PRODUTO_ID, nome: 'P' }]) // produto ok
+        .mockResolvedValueOnce([{ id: CICLO_ID }]);             // ciclo duplicado
 
       await expect(service.criar(dto, LOJA_ID))
         .rejects.toThrow(ConflictException);
     });
 
     it('cria ciclo sem quantidade (campo opcional)', async () => {
-      const dtoSemQtd = { clienteId: CLIENTE_ID, produtoId: PRODUTO_ID, intervaloDias: 15 };
-      const novoCiclo = { id: CICLO_ID, ...dtoSemQtd, quantidade: null };
+      const dtoSemQtd = {
+        clienteId: CLIENTE_ID,
+        produtos: [{ id: PRODUTO_ID }],
+        intervaloDias: 15,
+      };
+      const novoCiclo = { id: CICLO_ID, intervaloDias: 15 };
 
       sql
         .mockResolvedValueOnce([{ id: CLIENTE_ID }])
-        .mockResolvedValueOnce([{ id: PRODUTO_ID }])
+        .mockResolvedValueOnce([{ id: PRODUTO_ID, nome: 'P' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: CICLO_ID }])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([novoCiclo]);
 
       const resultado = await service.criar(dtoSemQtd, LOJA_ID);
-      expect(resultado.quantidade).toBeNull();
+      expect(resultado).toEqual(novoCiclo);
     });
   });
 

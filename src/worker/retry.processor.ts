@@ -4,6 +4,7 @@ import { Job } from 'bull';
 import { DATABASE_CLIENT } from '../database/database.module';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { FILA_RETRY, JOB_RETRY_LEMBRETE } from './worker.constants';
+import { formatarNomesProdutos } from '../ciclos/ciclos.service';
 
 // RetryProcessor lida com a segunda tentativa de contato.
 // É separado do LembretesProcessor para ter configurações independentes
@@ -29,17 +30,23 @@ export class RetryProcessor {
       SELECT
         l.id, l.ciclo_id, l.tentativa,
         cr.loja_id,
+        cr.quantidade AS quantidade_legado,
         c.nome          AS cliente_nome,
         c.whatsapp_nome AS whatsapp_nome,
         c.telefone      AS cliente_telefone,
-        p.nome      AS produto_nome,
-        p.unidade   AS produto_unidade,
-        cr.quantidade,
-        lj.horas_para_retry
+        lj.horas_para_retry,
+        ARRAY(
+          SELECT JSON_BUILD_OBJECT(
+            'nome', p.nome, 'quantidade', cp.quantidade, 'unidade', cp.unidade
+          )
+          FROM ciclo_produtos cp
+          JOIN produtos p ON p.id = cp.produto_id
+          WHERE cp.ciclo_id = cr.id
+          ORDER BY p.nome
+        ) AS produtos_info
       FROM lembretes l
       JOIN ciclos_recompra cr ON cr.id = l.ciclo_id
       JOIN clientes c         ON c.id  = cr.cliente_id
-      JOIN produtos p         ON p.id  = cr.produto_id
       JOIN lojas lj           ON lj.id = l.loja_id
       WHERE l.id = ${lembreteOriginalId}
     `;
@@ -58,14 +65,19 @@ export class RetryProcessor {
 
     // Envia a mensagem — poderia ter texto diferente para retry,
     // mas mantemos o mesmo fluxo por simplicidade no MVP
+    const produtosInfo: { nome: string; quantidade?: number | null; unidade?: string | null }[] =
+      original.produtosInfo ?? [];
+    const temQtdPorProduto = produtosInfo.some((p: any) => p.quantidade != null || p.unidade);
+    const produtoNome = formatarNomesProdutos(produtosInfo);
+    const quantidade = temQtdPorProduto ? undefined : (original.quantidadeLegado ?? undefined);
+
     try {
       await this.whatsappService.enviarLembrete({
         telefone:            original.clienteTelefone,
         clienteNome:         original.clienteNome,
         clienteWhatsappNome: original.whatsappNome ?? null,
-        produtoNome:         original.produtoNome,
-        quantidade:          original.quantidade,
-        unidade:             original.produtoUnidade,
+        produtoNome,
+        quantidade,
         lembreteId:          retryLembrete.id,
         lojaId,
       });

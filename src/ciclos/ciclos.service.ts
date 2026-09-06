@@ -10,29 +10,56 @@ import { DATABASE_CLIENT } from '../database/database.module';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { AtividadeLogService } from '../atividade-log/atividade-log.service';
 
+export interface CicloProdutoInput {
+  id: string;
+  quantidade?: number | null;
+  unidade?: 'kg' | 'grama' | 'pacote' | 'unidade' | null;
+}
+
 export interface CriarCicloDto {
   clienteId: string;
-  produtoIds: string[];   // múltiplos produtos por ciclo
+  produtos: CicloProdutoInput[];
   intervaloDias: number;
-  quantidade?: string;
-  horarioEnvio?: string;  // ex: '09:00' — padrão '09:00' se omitido
+  horarioEnvio?: string;
 }
 
 export interface AtualizarCicloDto {
   intervaloDias?: number;
-  quantidade?: string;
   ativo?: boolean;
   horarioEnvio?: string;
-  produtoIds?: string[];  // se fornecido, substitui todos os produtos do ciclo
+  produtos?: CicloProdutoInput[];
 }
 
-// Formata lista de nomes de produtos para mensagem natural.
-// Ex: ["A"] → "A" | ["A","B"] → "A e B" | ["A","B","C"] → "A, B e C"
-function formatarNomesProdutos(nomes: string[]): string {
-  if (nomes.length === 0) return 'produto';
-  if (nomes.length === 1) return nomes[0];
-  if (nomes.length === 2) return `${nomes[0]} e ${nomes[1]}`;
-  return nomes.slice(0, -1).join(', ') + ' e ' + nomes[nomes.length - 1];
+interface ProdutoComQtd {
+  nome: string;
+  quantidade?: number | null;
+  unidade?: string | null;
+}
+
+function pluralUnidade(u: string): string {
+  const map: Record<string, string> = {
+    kg: 'kg',
+    grama: 'gramas',
+    pacote: 'pacotes',
+    unidade: 'unidades',
+  };
+  return map[u] ?? u;
+}
+
+function formatarItemProduto(p: ProdutoComQtd): string {
+  if (p.quantidade != null && p.unidade) {
+    return `${p.quantidade} ${pluralUnidade(p.unidade)} de ${p.nome}`;
+  }
+  return p.nome;
+}
+
+// Formata lista de produtos (com quantidade/unidade opcionais) para mensagem natural.
+export function formatarNomesProdutos(produtos: ProdutoComQtd[]): string {
+  if (produtos.length === 0) return 'produto';
+  const partes = produtos.map(formatarItemProduto);
+  if (partes.length === 1) return partes[0];
+  if (partes.length === 2) return `${partes[0]} e ${partes[1]}`;
+  return partes.slice(0, -1).join(', ') + ' e ' + partes[partes.length - 1];
 }
 
 @Injectable()
@@ -45,13 +72,11 @@ export class CiclosService {
     private readonly atividadeLog: AtividadeLogService,
   ) {}
 
-  // Lista todos os ciclos ativos de uma loja, com dados do cliente e produtos
   async listar(lojaId: string) {
     return this.sql`
       SELECT
         cr.id,
         cr.intervalo_dias,
-        cr.quantidade,
         cr.ativo,
         cr.proxima_notificacao,
         cr.ultima_compra,
@@ -62,7 +87,10 @@ export class CiclosService {
         c.nome      AS cliente_nome,
         c.telefone  AS cliente_telefone,
         ARRAY(
-          SELECT JSON_BUILD_OBJECT('id', p.id, 'nome', p.nome)
+          SELECT JSON_BUILD_OBJECT(
+            'id', p.id, 'nome', p.nome,
+            'quantidade', cp.quantidade, 'unidade', cp.unidade
+          )
           FROM ciclo_produtos cp
           JOIN produtos p ON p.id = cp.produto_id
           WHERE cp.ciclo_id = cr.id
@@ -76,7 +104,6 @@ export class CiclosService {
     `;
   }
 
-  // Busca um ciclo específico — garante isolamento por loja
   async buscarPorId(id: string, lojaId: string) {
     const [ciclo] = await this.sql`
       SELECT
@@ -84,7 +111,10 @@ export class CiclosService {
         c.nome      AS cliente_nome,
         c.telefone  AS cliente_telefone,
         ARRAY(
-          SELECT JSON_BUILD_OBJECT('id', p.id, 'nome', p.nome)
+          SELECT JSON_BUILD_OBJECT(
+            'id', p.id, 'nome', p.nome,
+            'quantidade', cp.quantidade, 'unidade', cp.unidade
+          )
           FROM ciclo_produtos cp
           JOIN produtos p ON p.id = cp.produto_id
           WHERE cp.ciclo_id = cr.id
@@ -101,11 +131,12 @@ export class CiclosService {
     return ciclo;
   }
 
-  // Cria um novo ciclo com um ou mais produtos
   async criar(dto: CriarCicloDto, lojaId: string) {
-    if (!dto.produtoIds?.length) {
+    if (!dto.produtos?.length) {
       throw new BadRequestException('Informe pelo menos um produto');
     }
+
+    const produtoIds = dto.produtos.map((p) => p.id);
 
     const [cliente] = await this.sql`
       SELECT id FROM clientes
@@ -113,21 +144,19 @@ export class CiclosService {
     `;
     if (!cliente) throw new NotFoundException('Cliente não encontrado');
 
-    // Valida que todos os produtos pertencem à loja
     const produtosValidos = await this.sql`
-      SELECT id FROM produtos
-      WHERE id = ANY(${dto.produtoIds}) AND loja_id = ${lojaId} AND deleted_at IS NULL
+      SELECT id, nome FROM produtos
+      WHERE id = ANY(${produtoIds}) AND loja_id = ${lojaId} AND deleted_at IS NULL
     `;
-    if (produtosValidos.length !== dto.produtoIds.length) {
+    if (produtosValidos.length !== produtoIds.length) {
       throw new NotFoundException('Um ou mais produtos não encontrados');
     }
 
-    // Verifica conflito: algum dos produtos já está em outro ciclo ativo deste cliente
     const [conflito] = await this.sql`
       SELECT cr.id FROM ciclos_recompra cr
       JOIN ciclo_produtos cp ON cp.ciclo_id = cr.id
       WHERE cr.cliente_id = ${dto.clienteId}
-        AND cp.produto_id = ANY(${dto.produtoIds})
+        AND cp.produto_id = ANY(${produtoIds})
         AND cr.loja_id = ${lojaId}
         AND cr.deleted_at IS NULL
     `;
@@ -141,30 +170,31 @@ export class CiclosService {
 
     const [novoCiclo] = await this.sql`
       INSERT INTO ciclos_recompra
-        (loja_id, cliente_id, produto_id, intervalo_dias, quantidade, horario_envio, proxima_notificacao)
+        (loja_id, cliente_id, produto_id, intervalo_dias, horario_envio, proxima_notificacao)
       VALUES (
         ${lojaId},
         ${dto.clienteId},
-        ${dto.produtoIds[0]},
+        ${produtoIds[0]},
         ${dto.intervaloDias},
-        ${dto.quantidade ?? null},
         ${horarioEnvio},
         NOW() + (${dto.intervaloDias} || ' days')::INTERVAL
       )
       RETURNING id
     `;
 
-    // Insere todos os produtos na tabela de junção
-    for (const produtoId of dto.produtoIds) {
+    for (const prod of dto.produtos) {
       await this.sql`
-        INSERT INTO ciclo_produtos (ciclo_id, produto_id) VALUES (${novoCiclo.id}, ${produtoId})
-        ON CONFLICT DO NOTHING
+        INSERT INTO ciclo_produtos (ciclo_id, produto_id, quantidade, unidade)
+        VALUES (${novoCiclo.id}, ${prod.id}, ${prod.quantidade ?? null}, ${prod.unidade ?? null})
+        ON CONFLICT (ciclo_id, produto_id) DO UPDATE SET
+          quantidade = EXCLUDED.quantidade,
+          unidade    = EXCLUDED.unidade
       `;
     }
 
     void (async () => {
       try {
-        const nomes = produtosValidos.map((p: any) => p.nome ?? p.id);
+        const nomes = produtosValidos.map((p: any) => ({ nome: p.nome ?? p.id }));
         void this.atividadeLog.registrar(lojaId, 'ciclo_criado',
           `Ciclo de ${formatarNomesProdutos(nomes)} criado para cliente (${dto.intervaloDias}d)`);
       } catch { /* silent */ }
@@ -173,29 +203,28 @@ export class CiclosService {
     return this.buscarPorId(novoCiclo.id, lojaId);
   }
 
-  // Atualiza intervalo, quantidade, ativo, horário e/ou produtos do ciclo
   async atualizar(id: string, dto: AtualizarCicloDto, lojaId: string) {
     const ciclo = await this.buscarPorId(id, lojaId);
 
-    // Se fornecer novos produtos, valida e substitui
-    if (dto.produtoIds !== undefined) {
-      if (!dto.produtoIds.length) {
+    if (dto.produtos !== undefined) {
+      if (!dto.produtos.length) {
         throw new BadRequestException('Informe pelo menos um produto');
       }
+      const produtoIds = dto.produtos.map((p) => p.id);
+
       const produtosValidos = await this.sql`
         SELECT id FROM produtos
-        WHERE id = ANY(${dto.produtoIds}) AND loja_id = ${lojaId} AND deleted_at IS NULL
+        WHERE id = ANY(${produtoIds}) AND loja_id = ${lojaId} AND deleted_at IS NULL
       `;
-      if (produtosValidos.length !== dto.produtoIds.length) {
+      if (produtosValidos.length !== produtoIds.length) {
         throw new NotFoundException('Um ou mais produtos não encontrados');
       }
 
-      // Verifica conflito em outros ciclos deste cliente
       const [conflito] = await this.sql`
         SELECT cr.id FROM ciclos_recompra cr
         JOIN ciclo_produtos cp ON cp.ciclo_id = cr.id
         WHERE cr.cliente_id = ${ciclo.clienteId}
-          AND cp.produto_id = ANY(${dto.produtoIds})
+          AND cp.produto_id = ANY(${produtoIds})
           AND cr.loja_id = ${lojaId}
           AND cr.id != ${id}
           AND cr.deleted_at IS NULL
@@ -206,18 +235,19 @@ export class CiclosService {
         );
       }
 
-      // Substitui os produtos na tabela de junção
       await this.sql`DELETE FROM ciclo_produtos WHERE ciclo_id = ${id}`;
-      for (const produtoId of dto.produtoIds) {
+      for (const prod of dto.produtos) {
         await this.sql`
-          INSERT INTO ciclo_produtos (ciclo_id, produto_id) VALUES (${id}, ${produtoId})
-          ON CONFLICT DO NOTHING
+          INSERT INTO ciclo_produtos (ciclo_id, produto_id, quantidade, unidade)
+          VALUES (${id}, ${prod.id}, ${prod.quantidade ?? null}, ${prod.unidade ?? null})
+          ON CONFLICT (ciclo_id, produto_id) DO UPDATE SET
+            quantidade = EXCLUDED.quantidade,
+            unidade    = EXCLUDED.unidade
         `;
       }
 
-      // Mantém produto_id legado sincronizado com o primeiro produto
       await this.sql`
-        UPDATE ciclos_recompra SET produto_id = ${dto.produtoIds[0]}, updated_at = NOW()
+        UPDATE ciclos_recompra SET produto_id = ${produtoIds[0]}, updated_at = NOW()
         WHERE id = ${id} AND loja_id = ${lojaId}
       `;
     }
@@ -229,7 +259,6 @@ export class CiclosService {
     const [atualizado] = await this.sql`
       UPDATE ciclos_recompra SET
         intervalo_dias      = COALESCE(${dto.intervaloDias ?? null}, intervalo_dias),
-        quantidade          = COALESCE(${dto.quantidade ?? null}, quantidade),
         ativo               = COALESCE(${dto.ativo ?? null}, ativo),
         horario_envio       = COALESCE(${dto.horarioEnvio ?? null}, horario_envio),
         proxima_notificacao = ${novaProximaNotificacao},
@@ -328,28 +357,32 @@ export class CiclosService {
     `;
   }
 
-  // Dispara lembrete imediato para um ciclo — ação manual, sem restrição de horário
   async enviarLembreteImediato(id: string, lojaId: string) {
     const [ciclo] = await this.sql`
       SELECT
         cr.id,
-        cr.quantidade,
         c.nome  AS cliente_nome,
         c.telefone AS cliente_telefone,
+        cr.quantidade AS quantidade_legado,
         ARRAY(
-          SELECT p.nome
+          SELECT JSON_BUILD_OBJECT(
+            'nome', p.nome, 'quantidade', cp.quantidade, 'unidade', cp.unidade
+          )
           FROM ciclo_produtos cp
           JOIN produtos p ON p.id = cp.produto_id
           WHERE cp.ciclo_id = cr.id
           ORDER BY p.nome
-        ) AS produto_nomes
+        ) AS produtos_info
       FROM ciclos_recompra cr
       JOIN clientes c ON c.id = cr.cliente_id
       WHERE cr.id = ${id} AND cr.loja_id = ${lojaId} AND cr.deleted_at IS NULL
     `;
     if (!ciclo) throw new NotFoundException('Ciclo não encontrado');
 
-    const produtoNome = formatarNomesProdutos(ciclo.produtoNomes ?? []);
+    const produtosInfo: ProdutoComQtd[] = ciclo.produtosInfo ?? [];
+    const temQtdPorProduto = produtosInfo.some((p) => p.quantidade != null || p.unidade);
+    const produtoNome = formatarNomesProdutos(produtosInfo);
+    const quantidade = temQtdPorProduto ? undefined : (ciclo.quantidadeLegado ?? undefined);
 
     const [lembrete] = await this.sql`
       INSERT INTO lembretes (loja_id, ciclo_id, status, agendado_para)
@@ -362,7 +395,7 @@ export class CiclosService {
         telefone:    ciclo.clienteTelefone,
         clienteNome: ciclo.clienteNome,
         produtoNome,
-        quantidade:  ciclo.quantidade ?? undefined,
+        quantidade,
         lembreteId:  lembrete.id,
         lojaId,
       });

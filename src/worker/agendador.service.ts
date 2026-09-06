@@ -14,6 +14,7 @@ import {
   JOB_VERIFICAR_RESPOSTA,
   JOB_RETRY_LEMBRETE,
 } from './worker.constants';
+import { formatarNomesProdutos } from '../ciclos/ciclos.service';
 
 @Injectable()
 export class AgendadorService implements OnApplicationBootstrap {
@@ -71,14 +72,16 @@ export class AgendadorService implements OnApplicationBootstrap {
         c.whatsapp_nome AS whatsapp_nome,
         c.telefone      AS cliente_telefone,
         c.consentimento_whatsapp,
-        cr.quantidade,
+        cr.quantidade AS quantidade_legado,
         ARRAY(
-          SELECT p.nome
+          SELECT JSON_BUILD_OBJECT(
+            'nome', p.nome, 'quantidade', cp.quantidade, 'unidade', cp.unidade
+          )
           FROM ciclo_produtos cp
           JOIN produtos p ON p.id = cp.produto_id
           WHERE cp.ciclo_id = cr.id
           ORDER BY p.nome
-        ) AS produto_nomes
+        ) AS produtos_info
       FROM ciclos_recompra cr
       JOIN lojas    l ON l.id = cr.loja_id
       JOIN clientes c ON c.id = cr.cliente_id
@@ -199,11 +202,12 @@ export class AgendadorService implements OnApplicationBootstrap {
       RETURNING id
     `;
 
-    const nomes: string[] = ciclo.produtoNomes ?? [];
-    const produtoNome = nomes.length === 0 ? 'produto'
-      : nomes.length === 1 ? nomes[0]
-      : nomes.length === 2 ? `${nomes[0]} e ${nomes[1]}`
-      : nomes.slice(0, -1).join(', ') + ' e ' + nomes[nomes.length - 1];
+    const produtosInfo: { nome: string; quantidade?: number | null; unidade?: string | null }[] =
+      ciclo.produtosInfo ?? [];
+    const temQtdPorProduto = produtosInfo.some((p) => p.quantidade != null || p.unidade);
+    const produtoNome = formatarNomesProdutos(produtosInfo);
+    // Usa quantidade legada apenas quando nenhum produto tem qtd/unidade por produto
+    const quantidade = temQtdPorProduto ? null : (ciclo.quantidadeLegado ?? null);
 
     await this.filaLembretes.add(
       JOB_ENVIAR_LEMBRETE,
@@ -216,7 +220,7 @@ export class AgendadorService implements OnApplicationBootstrap {
         clienteTelefone:     ciclo.clienteTelefone,
         produtoNome,
         produtoUnidade:      null,
-        quantidade:          ciclo.quantidade,
+        quantidade,
         horarioAbertura:     ciclo.horarioAbertura,
         horarioFechamento:   ciclo.horarioFechamento,
         diasFuncionamento:   ciclo.diasFuncionamento,
