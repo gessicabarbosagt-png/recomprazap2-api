@@ -59,6 +59,7 @@ export class OnboardingService {
     const [row] = await this.sql`
       SELECT
         l.onboarding_teste_enviado,
+        l.wa_status,
         (SELECT COUNT(*) FROM produtos p WHERE p.loja_id = l.id AND p.deleted_at IS NULL)::int AS total_produtos,
         (SELECT COUNT(*) FROM clientes c WHERE c.loja_id = l.id AND c.deleted_at IS NULL)::int AS total_clientes,
         (l.mp_subscription_id IS NOT NULL) AS pagamento_configurado
@@ -66,17 +67,19 @@ export class OnboardingService {
       WHERE l.id = ${lojaId} AND l.deleted_at IS NULL
     `;
 
+    const waConectado          = row?.waStatus === 'conectado';
     const testEnviado          = Boolean(row?.onboardingTesteEnviado);
     const produtosSuficientes  = Number(row?.totalProdutos) >= 2;
     const clientesSuficientes  = Number(row?.totalClientes) > 1;
     const pagamentoConfigurado = Boolean(row?.pagamentoConfigurado);
 
     return {
+      waConectado,
       testEnviado,
       produtosSuficientes,
       clientesSuficientes,
       pagamentoConfigurado,
-      completo: testEnviado && produtosSuficientes && clientesSuficientes && pagamentoConfigurado,
+      completo: waConectado && testEnviado && produtosSuficientes && clientesSuficientes && pagamentoConfigurado,
     };
   }
 }
