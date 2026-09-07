@@ -1,39 +1,29 @@
 import { Injectable, Logger, Inject, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DATABASE_CLIENT } from '../database/database.module';
-import axios from 'axios';
-import { createHmac, timingSafeEqual } from 'crypto';
+import Stripe from 'stripe';
 import { Resend } from 'resend';
 import { EmailService } from '../email/email.service';
 
 @Injectable()
 export class PagamentosService {
   private readonly logger = new Logger(PagamentosService.name);
-  private readonly mpApiBase = 'https://api.mercadopago.com';
+  private readonly stripe: Stripe;
 
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
     private readonly config: ConfigService,
     private readonly emailService: EmailService,
-  ) {}
-
-  private get accessToken(): string {
-    return this.config.getOrThrow<string>('MP_ACCESS_TOKEN');
+  ) {
+    this.stripe = new Stripe(config.getOrThrow<string>('STRIPE_SECRET_KEY'));
   }
 
   private get webhookSecret(): string {
-    return this.config.getOrThrow<string>('MP_WEBHOOK_SECRET');
+    return this.config.getOrThrow<string>('STRIPE_WEBHOOK_SECRET');
   }
 
   private get frontendUrl(): string {
-    return this.config.get<string>('FRONTEND_URL') ?? 'https://recomprazap.com.br';
-  }
-
-  private mpHeaders() {
-    return {
-      Authorization: `Bearer ${this.accessToken}`,
-      'Content-Type': 'application/json',
-    };
+    return this.config.get<string>('FRONTEND_URL') ?? 'https://app.recomprazap.com.br';
   }
 
   // ── Status do plano ────────────────────────────────────────────────
@@ -42,194 +32,138 @@ export class PagamentosService {
     const [loja] = await this.sql`
       SELECT
         status_assinatura, valor_mensalidade, proximo_vencimento,
-        mp_payment_method, mp_card_last_four,
+        stripe_customer_id, stripe_subscription_id,
         inadimplente_desde, ativa
       FROM lojas WHERE id = ${lojaId} AND deleted_at IS NULL
     `;
     return loja;
   }
 
-  // ── Assinatura via cartão ──────────────────────────────────────────
+  // ── Stripe Checkout Session ────────────────────────────────────────
 
-  async criarAssinaturaCartao(lojaId: string, dto: {
-    cardToken: string;
-    payerEmail: string;
-    lastFour?: string;
-  }) {
+  async criarCheckoutSession(lojaId: string) {
     const [loja] = await this.sql`
-      SELECT valor_mensalidade, mp_subscription_id FROM lojas
+      SELECT id, email, plano_slug, stripe_customer_id FROM lojas
       WHERE id = ${lojaId} AND deleted_at IS NULL
     `;
     if (!loja) throw new BadRequestException('Loja não encontrada');
-    if (!loja.valorMensalidade || Number(loja.valorMensalidade) <= 0) {
-      throw new BadRequestException('Valor da mensalidade não configurado — contate o suporte');
-    }
 
-    // Cancela assinatura anterior se existir
-    if (loja.mpSubscriptionId) {
-      this.logger.log(`[MP] cancelando preapproval antigo: ${loja.mpSubscriptionId}`);
-      await this.cancelarPreapprovalNoMP(loja.mpSubscriptionId).catch((e: any) => {
-        this.logger.warn(`[MP] falha ao cancelar preapproval antigo (ignorada): ${e?.message} | upstream: ${JSON.stringify(e?.response?.data)}`);
-      });
-    }
+    const [plano] = loja.planoSlug
+      ? await this.sql`
+          SELECT stripe_price_id FROM planos_catalogo WHERE slug = ${loja.planoSlug}
+        `
+      : [null];
 
-    const startDate = new Date();
-    startDate.setHours(startDate.getHours() + 1);
-
-    const preapprovalPayload = {
-      reason: 'Mensalidade RecompraZap',
-      auto_recurring: {
-        frequency: 1,
-        frequency_type: 'months',
-        start_date: startDate.toISOString(),
-        transaction_amount: Number(loja.valorMensalidade),
-        currency_id: 'BRL',
-      },
-      card_token_id: dto.cardToken,
-      payer_email: dto.payerEmail,
-      back_url: `${this.frontendUrl}/plano`,
-    };
-    this.logger.log(`[MP] criando preapproval: ${JSON.stringify({ ...preapprovalPayload, card_token_id: dto.cardToken?.slice(0, 8) + '...' })}`);
-
-    const { data } = await axios.post(
-      `${this.mpApiBase}/preapproval`,
-      preapprovalPayload,
-      { headers: this.mpHeaders() },
-    );
-
-    await this.sql`
-      UPDATE lojas SET
-        mp_subscription_id = ${data.id},
-        mp_payment_method  = 'card',
-        mp_card_last_four  = ${dto.lastFour ?? null},
-        updated_at         = NOW()
-      WHERE id = ${lojaId}
-    `;
-
-    this.logger.log(`[MP] assinatura por cartão criada: preapproval_id=${data.id} loja=${lojaId}`);
-    return { subscriptionId: data.id };
-  }
-
-  // ── Trocar cartão ──────────────────────────────────────────────────
-
-  async trocarCartao(lojaId: string, dto: {
-    cardToken: string;
-    payerEmail: string;
-    lastFour?: string;
-  }) {
-    const [loja] = await this.sql`
-      SELECT mp_subscription_id FROM lojas WHERE id = ${lojaId} AND deleted_at IS NULL
-    `;
-    if (!loja) throw new BadRequestException('Loja não encontrada');
-
-    if (loja.mpSubscriptionId) {
-      await axios.put(
-        `${this.mpApiBase}/preapproval/${loja.mpSubscriptionId}`,
-        { card_token_id: dto.cardToken },
-        { headers: this.mpHeaders() },
+    if (!plano?.stripePriceId) {
+      throw new BadRequestException(
+        'Price ID do Stripe não configurado para este plano. Configure stripe_price_id em planos_catalogo ou contate o suporte.',
       );
-      await this.sql`
-        UPDATE lojas SET mp_card_last_four = ${dto.lastFour ?? null}, updated_at = NOW()
-        WHERE id = ${lojaId}
-      `;
-      this.logger.log(`[MP] cartão trocado: preapproval_id=${loja.mpSubscriptionId} loja=${lojaId}`);
+    }
+
+    const params: Stripe.Checkout.SessionCreateParams = {
+      mode: 'subscription',
+      line_items: [{ price: plano.stripePriceId, quantity: 1 }],
+      success_url: `${this.frontendUrl}/plano?sucesso=true`,
+      cancel_url:  `${this.frontendUrl}/plano?cancelado=true`,
+      metadata:          { lojaId },
+      subscription_data: { metadata: { lojaId } },
+    };
+
+    if (loja.stripeCustomerId) {
+      params.customer = loja.stripeCustomerId;
     } else {
-      await this.criarAssinaturaCartao(lojaId, dto);
+      params.customer_email = loja.email;
+    }
+
+    const session = await this.stripe.checkout.sessions.create(params);
+    this.logger.log(`[Stripe] checkout session criada: ${session.id} loja=${lojaId}`);
+    return { url: session.url };
+  }
+
+  // ── Webhook Stripe ─────────────────────────────────────────────────
+
+  construirEventoStripe(rawBody: Buffer, signature: string): Stripe.Event {
+    return this.stripe.webhooks.constructEvent(rawBody, signature, this.webhookSecret);
+  }
+
+  async processarWebhookStripe(event: Stripe.Event) {
+    this.logger.log(`[Stripe Webhook] tipo=${event.type} id=${event.id}`);
+
+    try {
+      if (event.type === 'checkout.session.completed') {
+        await this.processarCheckoutCompletado(event.data.object as Stripe.Checkout.Session);
+      } else if (event.type === 'invoice.payment_failed') {
+        await this.processarPagamentoFalhou(event.data.object as Stripe.Invoice);
+      }
+    } catch (e: any) {
+      this.logger.error(`[Stripe Webhook] erro ao processar ${event.type}: ${e?.message}`);
     }
   }
 
-  // ── Cancelar assinatura ────────────────────────────────────────────
-
-  async cancelarAssinatura(lojaId: string) {
-    const [loja] = await this.sql`
-      SELECT mp_subscription_id FROM lojas WHERE id = ${lojaId} AND deleted_at IS NULL
-    `;
-    if (loja?.mpSubscriptionId) {
-      await this.cancelarPreapprovalNoMP(loja.mpSubscriptionId).catch((e: any) => {
-        this.logger.warn(`[MP] erro ao cancelar preapproval ${loja.mpSubscriptionId}: ${e?.message}`);
-      });
+  private async processarCheckoutCompletado(session: Stripe.Checkout.Session) {
+    const lojaId = session.metadata?.lojaId;
+    if (!lojaId) {
+      this.logger.warn('[Stripe Webhook] checkout.session.completed sem lojaId no metadata');
+      return;
     }
+
+    const subscriptionId = session.subscription as string;
+    const customerId     = session.customer as string;
+    const valorCentavos  = session.amount_total ?? 0;
+
     await this.sql`
       UPDATE lojas SET
-        mp_subscription_id = NULL,
-        mp_payment_method  = NULL,
-        mp_card_last_four  = NULL,
-        updated_at         = NOW()
+        stripe_customer_id     = ${customerId},
+        stripe_subscription_id = ${subscriptionId},
+        status_assinatura      = 'ativa',
+        inadimplente_desde     = NULL,
+        ativa                  = TRUE,
+        proximo_vencimento     = (CURRENT_DATE + INTERVAL '1 month')::DATE,
+        updated_at             = NOW()
       WHERE id = ${lojaId}
     `;
-  }
 
-  private async cancelarPreapprovalNoMP(subscriptionId: string) {
-    await axios.put(
-      `${this.mpApiBase}/preapproval/${subscriptionId}`,
-      { status: 'cancelled' },
-      { headers: this.mpHeaders() },
+    await this.upsertPagamento(
+      lojaId, session.id, 'card',
+      valorCentavos / 100,
+      'aprovado', 'Assinatura Stripe',
     );
+
+    this.logger.log(`[Stripe Webhook] checkout.session.completed: loja=${lojaId} sub=${subscriptionId}`);
   }
 
-  // ── Pix por ciclo ─────────────────────────────────────────────────
+  private async processarPagamentoFalhou(invoice: Stripe.Invoice) {
+    const customerId = invoice.customer as string;
 
-  async gerarPixCiclo(lojaId: string) {
     const [loja] = await this.sql`
-      SELECT valor_mensalidade, email FROM lojas WHERE id = ${lojaId} AND deleted_at IS NULL
+      SELECT id, nome, email, status_assinatura FROM lojas
+      WHERE stripe_customer_id = ${customerId} AND deleted_at IS NULL
     `;
-    if (!loja) throw new BadRequestException('Loja não encontrada');
-    if (!loja.valorMensalidade || Number(loja.valorMensalidade) <= 0) {
-      throw new BadRequestException('Valor da mensalidade não configurado — contate o suporte');
+    if (!loja) {
+      this.logger.warn(`[Stripe Webhook] invoice.payment_failed: customer ${customerId} não encontrado`);
+      return;
     }
 
-    // Retorna Pix pendente válido se já existe
-    const [pixAtivo] = await this.sql`
-      SELECT id, mp_payment_id, pix_qr_code, pix_qr_code_base64, pix_expira_em, valor, criado_em
-      FROM pagamentos
-      WHERE loja_id = ${lojaId}
-        AND tipo = 'pix'
-        AND status = 'pendente'
-        AND pix_expira_em > NOW()
-      ORDER BY criado_em DESC
-      LIMIT 1
-    `;
-    if (pixAtivo) return pixAtivo;
-
-    const expiracao = new Date();
-    expiracao.setDate(expiracao.getDate() + 3);
-
-    const webhookUrl = this.config.get<string>('MP_WEBHOOK_URL');
-    const payload: any = {
-      transaction_amount: Number(loja.valorMensalidade),
-      description: 'Mensalidade RecompraZap',
-      payment_method_id: 'pix',
-      payer: { email: loja.email },
-      date_of_expiration: expiracao.toISOString(),
-      external_reference: lojaId,
-    };
-    if (webhookUrl) payload.notification_url = webhookUrl;
-
-    const { data } = await axios.post(
-      `${this.mpApiBase}/v1/payments`,
-      payload,
-      { headers: this.mpHeaders() },
+    const valorCentavos = (invoice as any).amount_due ?? 0;
+    await this.upsertPagamento(
+      loja.id, invoice.id, 'card',
+      valorCentavos / 100,
+      'recusado', 'Mensalidade Stripe — falhou',
     );
 
-    const txData = data.point_of_interaction?.transaction_data;
-    const [registro] = await this.sql`
-      INSERT INTO pagamentos (loja_id, mp_payment_id, tipo, valor, status, descricao, pix_qr_code, pix_qr_code_base64, pix_expira_em)
-      VALUES (
-        ${lojaId},
-        ${String(data.id)},
-        'pix',
-        ${Number(loja.valorMensalidade)},
-        'pendente',
-        'Mensalidade via Pix',
-        ${txData?.qr_code ?? null},
-        ${txData?.qr_code_base64 ?? null},
-        ${expiracao.toISOString()}
-      )
-      RETURNING id, mp_payment_id, pix_qr_code, pix_qr_code_base64, pix_expira_em, valor, criado_em
-    `;
-
-    this.logger.log(`[MP] pix gerado: payment_id=${data.id} loja=${lojaId} valor=${loja.valorMensalidade}`);
-    return registro;
+    if (loja.statusAssinatura !== 'inadimplente') {
+      await this.sql`
+        UPDATE lojas SET
+          status_assinatura  = 'inadimplente',
+          inadimplente_desde = COALESCE(inadimplente_desde, NOW()),
+          updated_at         = NOW()
+        WHERE id = ${loja.id}
+      `;
+      await this.criarNotificacaoInadimplente(loja.id);
+      await this.enviarEmailInadimplente(loja.email, loja.id);
+      this.emailService.enviarAlertaPagamentoRecusado(loja.id, loja.nome ?? loja.id, loja.email).catch(() => {});
+      this.logger.log(`[Stripe Webhook] loja ${loja.id} marcada inadimplente`);
+    }
   }
 
   // ── Histórico de pagamentos ────────────────────────────────────────
@@ -255,169 +189,15 @@ export class PagamentosService {
     `;
   }
 
-  // ── Webhook: validação HMAC ────────────────────────────────────────
-
-  validarAssinaturaWebhook(
-    xSignature: string,
-    xRequestId: string,
-    dataId: string,
-    ts: string,
-  ): boolean {
-    const message = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
-    const expected = createHmac('sha256', this.webhookSecret).update(message).digest('hex');
-    const v1Match = xSignature.match(/v1=([a-f0-9]+)/);
-    if (!v1Match) return false;
-    const expectedBuf = Buffer.from(expected, 'hex');
-    const receivedBuf = Buffer.from(v1Match[1], 'hex');
-    if (expectedBuf.length !== receivedBuf.length) return false;
-    return timingSafeEqual(expectedBuf, receivedBuf);
-  }
-
-  // ── Webhook: processamento de eventos ─────────────────────────────
-
-  async processarWebhook(body: any) {
-    const tipo    = body?.type as string;
-    const action  = body?.action as string;
-    const dataId  = String(body?.data?.id ?? '');
-
-    this.logger.log(`[MP Webhook] tipo=${tipo} action=${action} dataId=${dataId}`);
-
-    try {
-      if (tipo === 'subscription_authorized_payment') {
-        await this.processarPagamentoAssinatura(dataId);
-      } else if (tipo === 'payment') {
-        await this.processarPagamentoPix(dataId);
-      } else if (tipo === 'subscription_preapproval') {
-        await this.processarStatusPreapproval(dataId);
-      }
-    } catch (e: any) {
-      this.logger.error(`[MP Webhook] erro ao processar evento: ${e?.message}`);
-    }
-  }
-
-  private async processarPagamentoAssinatura(authorizedPaymentId: string) {
-    const { data } = await axios.get(
-      `${this.mpApiBase}/v1/subscription_authorized_payments/${authorizedPaymentId}`,
-      { headers: this.mpHeaders() },
-    ).catch(() => ({ data: null as any }));
-    if (!data) return;
-
-    const preapprovalId = String(data.preapproval_id ?? '');
-    const status        = data.status as string; // 'processed' | 'recycling' | 'cancelled'
-    const valor         = Number(data.transaction_amount ?? 0);
-    const mpPaymentId   = String(data.id);
-
-    const [loja] = await this.sql`
-      SELECT id, nome, email, status_assinatura FROM lojas
-      WHERE mp_subscription_id = ${preapprovalId} AND deleted_at IS NULL
-    `;
-    if (!loja) {
-      this.logger.warn(`[MP Webhook] preapproval ${preapprovalId} não encontrado`);
-      return;
-    }
-
-    if (status === 'processed') {
-      await this.upsertPagamento(loja.id, mpPaymentId, 'card', valor, 'aprovado', 'Mensalidade via cartão');
-      await this.sql`
-        UPDATE lojas SET
-          status_assinatura  = 'ativa',
-          inadimplente_desde = NULL,
-          proximo_vencimento = (CURRENT_DATE + INTERVAL '1 month')::DATE,
-          updated_at         = NOW()
-        WHERE id = ${loja.id}
-      `;
-      this.logger.log(`[MP Webhook] pagamento aprovado: loja=${loja.id}`);
-
-    } else if (status === 'recycling') {
-      await this.upsertPagamento(loja.id, mpPaymentId, 'card', valor, 'recusado', 'Mensalidade via cartão — recusada');
-      if (loja.statusAssinatura !== 'inadimplente') {
-        await this.sql`
-          UPDATE lojas SET
-            status_assinatura  = 'inadimplente',
-            inadimplente_desde = COALESCE(inadimplente_desde, NOW()),
-            updated_at         = NOW()
-          WHERE id = ${loja.id}
-        `;
-        await this.criarNotificacaoInadimplente(loja.id);
-        await this.enviarEmailInadimplente(loja.email, loja.id);
-        this.emailService.enviarAlertaPagamentoRecusado(loja.id, loja.nome ?? loja.id, loja.email).catch(() => {});
-        this.logger.log(`[MP Webhook] loja ${loja.id} marcada inadimplente`);
-      }
-    }
-  }
-
-  private async processarPagamentoPix(paymentId: string) {
-    const { data } = await axios.get(
-      `${this.mpApiBase}/v1/payments/${paymentId}`,
-      { headers: this.mpHeaders() },
-    ).catch(() => ({ data: null as any }));
-    if (!data) return;
-    if (data.payment_method_id !== 'pix') return;
-
-    const lojaId = data.external_reference as string;
-    if (!lojaId) return;
-
-    const status = data.status as string; // 'approved' | 'pending' | 'rejected' | 'cancelled' | 'expired'
-    const mpId   = String(data.id);
-
-    if (status === 'approved') {
-      await this.sql`
-        UPDATE pagamentos SET status = 'aprovado', atualizado_em = NOW()
-        WHERE mp_payment_id = ${mpId}
-      `.catch(() => {});
-      await this.sql`
-        UPDATE lojas SET
-          status_assinatura  = 'ativa',
-          inadimplente_desde = NULL,
-          proximo_vencimento = (CURRENT_DATE + INTERVAL '1 month')::DATE,
-          updated_at         = NOW()
-        WHERE id = ${lojaId}
-      `;
-      this.logger.log(`[MP Webhook] pix aprovado: loja=${lojaId} payment=${mpId}`);
-
-    } else if (status === 'rejected' || status === 'cancelled' || status === 'expired') {
-      const novoStatus = status === 'expired' ? 'cancelado' : 'recusado';
-      await this.sql`
-        UPDATE pagamentos SET status = ${novoStatus}, atualizado_em = NOW()
-        WHERE mp_payment_id = ${mpId}
-      `.catch(() => {});
-    }
-  }
-
-  private async processarStatusPreapproval(preapprovalId: string) {
-    const { data } = await axios.get(
-      `${this.mpApiBase}/preapproval/${preapprovalId}`,
-      { headers: this.mpHeaders() },
-    ).catch(() => ({ data: null as any }));
-    if (!data) return;
-
-    if (data.status === 'cancelled') {
-      const [loja] = await this.sql`
-        SELECT id FROM lojas WHERE mp_subscription_id = ${preapprovalId} AND deleted_at IS NULL
-      `;
-      if (loja) {
-        await this.sql`
-          UPDATE lojas SET
-            mp_subscription_id = NULL,
-            mp_payment_method  = NULL,
-            ativa              = false,
-            updated_at         = NOW()
-          WHERE id = ${loja.id}
-        `;
-        this.logger.log(`[MP Webhook] assinatura cancelada pelo MP: loja=${loja.id}`);
-      }
-    }
-  }
-
   // ── Helpers internos ───────────────────────────────────────────────
 
   private async upsertPagamento(
-    lojaId: string, mpPaymentId: string, tipo: string,
+    lojaId: string, paymentId: string, tipo: string,
     valor: number, status: string, descricao: string,
   ) {
     await this.sql`
       INSERT INTO pagamentos (loja_id, mp_payment_id, tipo, valor, status, descricao)
-      VALUES (${lojaId}, ${mpPaymentId}, ${tipo}, ${valor}, ${status}, ${descricao})
+      VALUES (${lojaId}, ${paymentId}, ${tipo}, ${valor}, ${status}, ${descricao})
       ON CONFLICT (mp_payment_id) DO UPDATE
         SET status = ${status}, atualizado_em = NOW()
     `.catch(() => {});
@@ -426,7 +206,7 @@ export class PagamentosService {
   private async criarNotificacaoInadimplente(lojaId: string) {
     await this.sql`
       INSERT INTO notificacoes_admin (loja_id, mensagem)
-      VALUES (${lojaId}, 'Seu pagamento foi recusado. Acesse "Meu Plano" e atualize seu método de pagamento para evitar a suspensão do serviço.')
+      VALUES (${lojaId}, 'Seu pagamento foi recusado. Acesse "Meu Plano" e regularize sua assinatura para evitar a suspensão do serviço.')
     `.catch(() => {});
   }
 
@@ -442,7 +222,7 @@ export class PagamentosService {
         subject: 'Pagamento recusado — Regularize seu plano RecompraZap',
         html: `<p>Olá,</p>
 <p>Identificamos que o pagamento da sua mensalidade foi recusado.</p>
-<p>Para evitar a suspensão do serviço, acesse o painel e atualize seu método de pagamento em <strong>Meu Plano</strong>.</p>
+<p>Para evitar a suspensão do serviço, acesse o painel e regularize sua assinatura em <strong>Meu Plano</strong>.</p>
 <p>Após 5 dias sem regularização, o acesso à plataforma poderá ser suspenso.</p>
 <p>Equipe RecompraZap</p>`,
       });
@@ -451,26 +231,35 @@ export class PagamentosService {
     }
   }
 
-  // ── Atualiza valor da assinatura no MP (chamado ao fazer upgrade) ───
+  // ── Atualiza assinatura Stripe ao fazer upgrade de plano ──────────
 
-  async atualizarValorPreapproval(lojaId: string, novoValor: number) {
+  async atualizarAssinaturaStripe(lojaId: string, novoPlanoSlug: string) {
     const [loja] = await this.sql`
-      SELECT mp_subscription_id FROM lojas WHERE id = ${lojaId} AND deleted_at IS NULL
+      SELECT stripe_subscription_id FROM lojas WHERE id = ${lojaId} AND deleted_at IS NULL
     `;
-    if (!loja?.mpSubscriptionId) return;
+    if (!loja?.stripeSubscriptionId) return;
+
+    const [plano] = await this.sql`
+      SELECT stripe_price_id FROM planos_catalogo WHERE slug = ${novoPlanoSlug}
+    `;
+    if (!plano?.stripePriceId) return;
+
     try {
-      await axios.put(
-        `${this.mpApiBase}/preapproval/${loja.mpSubscriptionId}`,
-        { auto_recurring: { transaction_amount: novoValor } },
-        { headers: this.mpHeaders() },
-      );
-      this.logger.log(`[MP] preapproval ${loja.mpSubscriptionId} valor atualizado para ${novoValor}`);
+      const subscription = await this.stripe.subscriptions.retrieve(loja.stripeSubscriptionId);
+      const itemId = subscription.items.data[0]?.id;
+      if (!itemId) return;
+
+      await this.stripe.subscriptions.update(loja.stripeSubscriptionId, {
+        items: [{ id: itemId, price: plano.stripePriceId }],
+        proration_behavior: 'create_prorations',
+      });
+      this.logger.log(`[Stripe] assinatura ${loja.stripeSubscriptionId} atualizada para plano ${novoPlanoSlug}`);
     } catch (e: any) {
-      this.logger.warn(`[MP] erro ao atualizar valor preapproval ${loja.mpSubscriptionId}: ${e?.message}`);
+      this.logger.warn(`[Stripe] erro ao atualizar assinatura ${loja.stripeSubscriptionId}: ${e?.message}`);
     }
   }
 
-  // ── Aviso diário (chamado pelo cron) ───────────────────────────────
+  // ── Aviso diário / suspensão (chamados pelo cron) ─────────────────
 
   async avisarInadimplentesAtivos() {
     const inadimplentes = await this.sql`

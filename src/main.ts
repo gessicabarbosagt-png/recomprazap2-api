@@ -4,7 +4,7 @@ import { AppModule } from './app.module';
 import helmet from 'helmet';
 import * as cookieParser from 'cookie-parser';
 
-const REQUIRED_ENV_VARS = ['ENCRYPTION_KEY', 'MP_WEBHOOK_SECRET', 'JWT_SECRET'];
+const REQUIRED_ENV_VARS = ['ENCRYPTION_KEY', 'JWT_SECRET', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET'];
 
 async function bootstrap() {
   for (const name of REQUIRED_ENV_VARS) {
@@ -13,7 +13,7 @@ async function bootstrap() {
     }
   }
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   // Railway (e outros reverse-proxies) encaminha o IP real do cliente via X-Forwarded-For.
   // Sem isso, req.ip retorna o IP interno do proxy — o throttler nunca acumula hits por usuário.

@@ -1,5 +1,5 @@
 import {
-  Controller, UseGuards, Get, Post, Delete, Body, Param,
+  Controller, UseGuards, Get, Post, Param,
   HttpCode, HttpStatus, Headers, RawBodyRequest, Req,
   UnauthorizedException, BadRequestException,
 } from '@nestjs/common';
@@ -9,13 +9,6 @@ import { PagamentosService } from './pagamentos.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AdminGuard } from '../admin/admin.guard';
 import { UsuarioAtual, UsuarioLogado } from '../common/decorators/usuario-atual.decorator';
-import { IsString, IsEmail, IsOptional, MinLength } from 'class-validator';
-
-class CriarAssinaturaCartaoDto {
-  @IsString() @MinLength(10) cardToken: string;
-  @IsEmail() payerEmail: string;
-  @IsOptional() @IsString() lastFour?: string;
-}
 
 @Controller()
 export class PagamentosController {
@@ -23,30 +16,28 @@ export class PagamentosController {
 
   // ── Webhook público (sem JWT) ──────────────────────────────────────
 
-  // POST /api/v1/webhooks/mercadopago
+  // POST /api/v1/webhooks/stripe
   @Throttle({ default: { limit: 60, ttl: 60_000 } })
-  @Post('webhooks/mercadopago')
+  @Post('webhooks/stripe')
   @HttpCode(HttpStatus.OK)
-  async webhookMercadoPago(
-    @Body() body: any,
-    @Headers('x-signature') xSignature: string,
-    @Headers('x-request-id') xRequestId: string,
+  async webhookStripe(
+    @Req() req: RawBodyRequest<Request>,
+    @Headers('stripe-signature') signature: string,
   ) {
-    if (!xSignature) {
-      throw new UnauthorizedException('Assinatura do webhook ausente');
+    if (!signature) {
+      throw new UnauthorizedException('Assinatura do webhook Stripe ausente');
     }
-
-    const dataId = String(body?.data?.id ?? '');
-    const tsMatch = xSignature.match(/ts=(\d+)/);
-    const ts = tsMatch?.[1] ?? '';
-    const valido = this.pagamentosService.validarAssinaturaWebhook(
-      xSignature, xRequestId ?? '', dataId, ts,
-    );
-    if (!valido) {
-      throw new UnauthorizedException('Assinatura do webhook inválida');
+    const rawBody = req.rawBody;
+    if (!rawBody) {
+      throw new BadRequestException('Raw body não disponível — verifique a configuração do servidor');
     }
-
-    await this.pagamentosService.processarWebhook(body);
+    let event: any;
+    try {
+      event = this.pagamentosService.construirEventoStripe(rawBody, signature);
+    } catch (e: any) {
+      throw new UnauthorizedException(`Assinatura do webhook Stripe inválida: ${e.message}`);
+    }
+    await this.pagamentosService.processarWebhookStripe(event);
     return { ok: true };
   }
 
@@ -66,39 +57,11 @@ export class PagamentosController {
     return this.pagamentosService.listarPagamentos(usuario.lojaId);
   }
 
-  // POST /api/v1/pagamentos/assinatura/cartao
+  // POST /api/v1/pagamentos/stripe/checkout
   @UseGuards(JwtAuthGuard)
-  @Post('pagamentos/assinatura/cartao')
-  criarAssinaturaCartao(
-    @UsuarioAtual() usuario: UsuarioLogado,
-    @Body() dto: CriarAssinaturaCartaoDto,
-  ) {
-    return this.pagamentosService.criarAssinaturaCartao(usuario.lojaId, dto);
-  }
-
-  // POST /api/v1/pagamentos/assinatura/cartao/trocar
-  @UseGuards(JwtAuthGuard)
-  @Post('pagamentos/assinatura/cartao/trocar')
-  trocarCartao(
-    @UsuarioAtual() usuario: UsuarioLogado,
-    @Body() dto: CriarAssinaturaCartaoDto,
-  ) {
-    return this.pagamentosService.trocarCartao(usuario.lojaId, dto);
-  }
-
-  // DELETE /api/v1/pagamentos/assinatura
-  @UseGuards(JwtAuthGuard)
-  @Delete('pagamentos/assinatura')
-  @HttpCode(HttpStatus.OK)
-  cancelarAssinatura(@UsuarioAtual() usuario: UsuarioLogado) {
-    return this.pagamentosService.cancelarAssinatura(usuario.lojaId);
-  }
-
-  // POST /api/v1/pagamentos/pix
-  @UseGuards(JwtAuthGuard)
-  @Post('pagamentos/pix')
-  gerarPix(@UsuarioAtual() usuario: UsuarioLogado) {
-    return this.pagamentosService.gerarPixCiclo(usuario.lojaId);
+  @Post('pagamentos/stripe/checkout')
+  criarCheckoutSession(@UsuarioAtual() usuario: UsuarioLogado) {
+    return this.pagamentosService.criarCheckoutSession(usuario.lojaId);
   }
 
   // ── Rotas admin ────────────────────────────────────────────────────

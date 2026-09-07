@@ -84,8 +84,8 @@ export class PlanosService {
       WHERE id = ${lojaId} AND deleted_at IS NULL
     `;
 
-    // Atualiza valor na assinatura MP para o próximo ciclo (fire-and-forget)
-    this.pagamentosService.atualizarValorPreapproval(lojaId, Number(plano.precoMensal)).catch(() => {});
+    // Atualiza price da assinatura Stripe para o próximo ciclo (fire-and-forget)
+    this.pagamentosService.atualizarAssinaturaStripe(lojaId, planoSlug).catch(() => {});
 
     return { planoSlug, nome: plano.nome, precoMensal: Number(plano.precoMensal) };
   }

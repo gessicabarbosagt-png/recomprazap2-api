@@ -22,7 +22,7 @@
     "@types/cookie-parser": "^1.4.10",
     "@types/cron": "^2.0.1",
     "@whiskeysockets/baileys": "^7.0.0-rc13",
-    "axios": "^1.4.0",
+    "stripe": "^17.0.0",
     "bcrypt": "^5.1.0",
     "bull": "^4.11.0",
     "class-transformer": "^0.5.1",

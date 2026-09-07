@@ -14,7 +14,7 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 // Rotas isentas automaticamente:
 //   - Métodos seguros (GET, HEAD, OPTIONS) → não alteram estado
 //   - Requests sem cookie recomprazap_token → sem sessão para sequestrar
-//     (cobre: POST /auth/login, POST /webhooks/mercadopago)
+//     (cobre: POST /auth/login, POST /webhooks/stripe)
 @Injectable()
 export class CsrfGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
