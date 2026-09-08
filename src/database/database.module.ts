@@ -387,6 +387,18 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
             WHERE deleted_at IS NULL
         `.catch(() => {});
 
+        // migration_018: tabela de log de atividades por loja (usada por AtividadeLogService)
+        await sql`
+          CREATE TABLE IF NOT EXISTS atividade_log (
+            id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            loja_id    UUID        NOT NULL REFERENCES lojas(id) ON DELETE CASCADE,
+            tipo       VARCHAR(80) NOT NULL,
+            descricao  TEXT        NOT NULL,
+            criado_em  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `.catch(() => {});
+        await sql`CREATE INDEX IF NOT EXISTS idx_atividade_log_loja ON atividade_log(loja_id, criado_em DESC)`.catch(() => {});
+
         return sql;
       },
     },

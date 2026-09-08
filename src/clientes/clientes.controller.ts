@@ -55,6 +55,13 @@ export class ClientesController {
     res.send(csv);
   }
 
+  // GET /api/v1/clientes/importar-whatsapp — lista contatos do WA ainda não importados
+  // ATENÇÃO: deve ficar ANTES de @Get(':id') para não ser capturada como UUID
+  @Get('importar-whatsapp')
+  listarContatosWhatsapp(@UsuarioAtual() usuario: UsuarioLogado) {
+    return this.baileysService.listarContatosParaImportar(usuario.lojaId);
+  }
+
   // GET /api/v1/clientes/:id
   @Get(':id')
   buscarPorId(
@@ -71,12 +78,6 @@ export class ClientesController {
     @UsuarioAtual() usuario: UsuarioLogado,
   ) {
     return this.clientesService.criar(dto, usuario.lojaId);
-  }
-
-  // GET /api/v1/clientes/importar-whatsapp — lista contatos do WA ainda não importados
-  @Get('importar-whatsapp')
-  listarContatosWhatsapp(@UsuarioAtual() usuario: UsuarioLogado) {
-    return this.baileysService.listarContatosParaImportar(usuario.lojaId);
   }
 
   // POST /api/v1/clientes/importar-whatsapp — importa contatos selecionados
