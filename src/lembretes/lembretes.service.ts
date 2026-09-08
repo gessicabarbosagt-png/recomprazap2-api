@@ -146,7 +146,7 @@ export class LembretesService {
         c.nome           AS cliente_nome,
         c.telefone       AS cliente_telefone,
         p.nome           AS produto_nome,
-        p.unidade        AS produto_unidade,
+        p.especificacao  AS produto_unidade,
         cr.quantidade,
         c.id             AS cliente_id,
         cr.id            AS ciclo_id
@@ -167,8 +167,8 @@ export class LembretesService {
         l.id, l.ciclo_id,
         c.nome      AS cliente_nome,
         c.telefone  AS cliente_telefone,
-        p.nome      AS produto_nome,
-        p.unidade   AS produto_unidade,
+        p.nome          AS produto_nome,
+        p.especificacao AS produto_unidade,
         cr.quantidade
       FROM lembretes l
       JOIN ciclos_recompra cr ON cr.id = l.ciclo_id

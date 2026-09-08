@@ -123,8 +123,8 @@ export class PedidosService {
         c.id          AS cliente_id,
         c.nome        AS cliente_nome,
         c.telefone    AS cliente_telefone,
-        pr.nome       AS produto_nome,
-        pr.unidade    AS produto_unidade
+        pr.nome          AS produto_nome,
+        pr.especificacao AS produto_unidade
       FROM pedidos p
       JOIN clientes c   ON c.id  = p.cliente_id
       LEFT JOIN produtos pr ON pr.id = p.produto_id

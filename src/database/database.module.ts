@@ -352,6 +352,41 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
           WHERE l.plano_slug IS NULL AND l.deleted_at IS NULL
         `.catch(() => {});
 
+        // migration_016: contatos do WhatsApp (contacts.upsert via Baileys)
+        await sql`
+          CREATE TABLE IF NOT EXISTS whatsapp_contatos (
+            id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            loja_id    UUID        NOT NULL REFERENCES lojas(id) ON DELETE CASCADE,
+            telefone   VARCHAR(20) NOT NULL,
+            nome       TEXT,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (loja_id, telefone)
+          )
+        `.catch(() => {});
+        await sql`CREATE INDEX IF NOT EXISTS idx_whatsapp_contatos_loja ON whatsapp_contatos(loja_id)`.catch(() => {});
+
+        // migration_017: unique parcial em clientes (loja_id, telefone) — previne duplicatas
+        // Passo 1: remove duplicatas mantendo o registro mais antigo (created_at ASC)
+        await sql`
+          UPDATE clientes SET deleted_at = NOW(), updated_at = NOW()
+          WHERE deleted_at IS NULL
+            AND id IN (
+              SELECT id FROM (
+                SELECT id,
+                       ROW_NUMBER() OVER (PARTITION BY loja_id, telefone ORDER BY created_at ASC) AS rn
+                FROM clientes
+                WHERE deleted_at IS NULL
+              ) ranked
+              WHERE rn > 1
+            )
+        `.catch(() => {});
+        // Passo 2: cria índice único parcial (só em não-deletados)
+        await sql`
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_loja_telefone_uq
+            ON clientes (loja_id, telefone)
+            WHERE deleted_at IS NULL
+        `.catch(() => {});
+
         return sql;
       },
     },

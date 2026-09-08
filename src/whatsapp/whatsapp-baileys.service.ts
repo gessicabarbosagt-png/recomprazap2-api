@@ -1238,10 +1238,19 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
 
     for (const g of gatilhos) {
       const fraseNorm = this.normalizarTexto(g.frase);
-      this.logger.log(`[GATILHO] frase="${g.frase}" norm="${fraseNorm}" | textoNorm="${textoNorm.slice(0, 60)}" | match=${textoNorm.includes(fraseNorm)}`);
+      // variante com gênero alternado: obrigad**o** → obrigad**a** (e vice-versa)
+      const fraseNormAlt = fraseNorm
+        .replace(/([a-z]{4,})o\b/g, '$1a')
+        .replace(/([a-z]{4,})a\b/g, '$1o');
+      const bateu = textoNorm.includes(fraseNorm) || textoNorm.includes(fraseNormAlt);
+      this.logger.log(`[GATILHO] frase="${g.frase}" norm="${fraseNorm}" alt="${fraseNormAlt}" | match=${bateu}`);
     }
 
-    const match = gatilhos.find((g: any) => textoNorm.includes(this.normalizarTexto(g.frase)));
+    const match = gatilhos.find((g: any) => {
+      const fn = this.normalizarTexto(g.frase);
+      const fnAlt = fn.replace(/([a-z]{4,})o\b/g, '$1a').replace(/([a-z]{4,})a\b/g, '$1o');
+      return textoNorm.includes(fn) || textoNorm.includes(fnAlt);
+    });
     if (!match) {
       this.logger.log(`[GATILHO] nenhum match para msg de ${telefone}`);
       return;
@@ -1272,6 +1281,10 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const [etapaComprou] = await this.sql`
       SELECT id FROM etapas_jornada WHERE loja_id = ${lojaId} AND tipo = 'final_comprou' LIMIT 1
     `;
+    if (!etapaComprou) {
+      this.logger.warn(`[GATILHO] loja=${lojaId} não tem etapa final_comprou — gatilho ignorado`);
+      return;
+    }
 
     const valor = this.extrairValorMonetario(texto);
     this.logger.log(`[GATILHO] valor extraído da mensagem: ${valor ?? 'nenhum'}`);
@@ -1279,7 +1292,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     if (pedidoAberto) {
       await this.sql`
         UPDATE pedidos SET
-          etapa_id       = ${etapaComprou?.id ?? null},
+          etapa_id       = ${etapaComprou.id},
           status_jornada = 'comprou',
           confirmado_por = 'palavra_chave',
           confirmado_em  = NOW(),
@@ -1291,7 +1304,7 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     } else {
       await this.sql`
         INSERT INTO pedidos (loja_id, cliente_id, etapa_id, status_jornada, confirmado_por, confirmado_em, valor)
-        VALUES (${lojaId}, ${cliente.id}, ${etapaComprou?.id ?? null}, 'comprou', 'palavra_chave', NOW(), ${valor})
+        VALUES (${lojaId}, ${cliente.id}, ${etapaComprou.id}, 'comprou', 'palavra_chave', NOW(), ${valor})
       `;
       this.logger.log(`[GATILHO] nenhum pedido aberto para cliente=${cliente.id} — pedido direto criado via palavra_chave, valor=${valor ?? 'não capturado'}`);
     }

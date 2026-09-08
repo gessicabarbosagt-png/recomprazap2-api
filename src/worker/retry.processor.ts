@@ -31,6 +31,8 @@ export class RetryProcessor {
         l.id, l.ciclo_id, l.tentativa,
         cr.loja_id,
         cr.quantidade AS quantidade_legado,
+        (SELECT p_leg.nome FROM produtos p_leg WHERE p_leg.id = cr.produto_id LIMIT 1)
+          AS produto_nome_legado,
         c.nome          AS cliente_nome,
         c.whatsapp_nome AS whatsapp_nome,
         c.telefone      AS cliente_telefone,
@@ -67,8 +69,14 @@ export class RetryProcessor {
     // mas mantemos o mesmo fluxo por simplicidade no MVP
     const produtosInfo: { nome: string; quantidade?: number | null; unidade?: string | null }[] =
       original.produtosInfo ?? [];
-    const temQtdPorProduto = produtosInfo.some((p: any) => p.quantidade != null || p.unidade);
-    const produtoNome = formatarNomesProdutos(produtosInfo);
+    // Fallback para ciclos antigos sem entradas em ciclo_produtos
+    const produtosEfetivos = produtosInfo.length > 0
+      ? produtosInfo
+      : original.produtoNomeLegado
+        ? [{ nome: original.produtoNomeLegado as string }]
+        : [];
+    const temQtdPorProduto = produtosEfetivos.some((p: any) => p.quantidade != null || p.unidade);
+    const produtoNome = formatarNomesProdutos(produtosEfetivos);
     const quantidade = temQtdPorProduto ? undefined : (original.quantidadeLegado ?? undefined);
 
     try {

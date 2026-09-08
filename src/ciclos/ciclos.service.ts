@@ -364,6 +364,8 @@ export class CiclosService {
         c.nome  AS cliente_nome,
         c.telefone AS cliente_telefone,
         cr.quantidade AS quantidade_legado,
+        (SELECT p_leg.nome FROM produtos p_leg WHERE p_leg.id = cr.produto_id LIMIT 1)
+          AS produto_nome_legado,
         ARRAY(
           SELECT JSON_BUILD_OBJECT(
             'nome', p.nome, 'quantidade', cp.quantidade, 'unidade', cp.unidade
@@ -380,8 +382,14 @@ export class CiclosService {
     if (!ciclo) throw new NotFoundException('Ciclo não encontrado');
 
     const produtosInfo: ProdutoComQtd[] = ciclo.produtosInfo ?? [];
-    const temQtdPorProduto = produtosInfo.some((p) => p.quantidade != null || p.unidade);
-    const produtoNome = formatarNomesProdutos(produtosInfo);
+    // Fallback para ciclos antigos sem entradas em ciclo_produtos
+    const produtosEfetivos: ProdutoComQtd[] = produtosInfo.length > 0
+      ? produtosInfo
+      : ciclo.produtoNomeLegado
+        ? [{ nome: ciclo.produtoNomeLegado as string }]
+        : [];
+    const temQtdPorProduto = produtosEfetivos.some((p) => p.quantidade != null || p.unidade);
+    const produtoNome = formatarNomesProdutos(produtosEfetivos);
     const quantidade = temQtdPorProduto ? undefined : (ciclo.quantidadeLegado ?? undefined);
 
     const [lembrete] = await this.sql`

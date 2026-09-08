@@ -73,6 +73,8 @@ export class AgendadorService implements OnApplicationBootstrap {
         c.telefone      AS cliente_telefone,
         c.consentimento_whatsapp,
         cr.quantidade AS quantidade_legado,
+        (SELECT p_leg.nome FROM produtos p_leg WHERE p_leg.id = cr.produto_id LIMIT 1)
+          AS produto_nome_legado,
         ARRAY(
           SELECT JSON_BUILD_OBJECT(
             'nome', p.nome, 'quantidade', cp.quantidade, 'unidade', cp.unidade
@@ -204,8 +206,14 @@ export class AgendadorService implements OnApplicationBootstrap {
 
     const produtosInfo: { nome: string; quantidade?: number | null; unidade?: string | null }[] =
       ciclo.produtosInfo ?? [];
-    const temQtdPorProduto = produtosInfo.some((p) => p.quantidade != null || p.unidade);
-    const produtoNome = formatarNomesProdutos(produtosInfo);
+    // Fallback para ciclos antigos sem entradas em ciclo_produtos
+    const produtosEfetivos = produtosInfo.length > 0
+      ? produtosInfo
+      : ciclo.produtoNomeLegado
+        ? [{ nome: ciclo.produtoNomeLegado as string }]
+        : [];
+    const temQtdPorProduto = produtosEfetivos.some((p) => p.quantidade != null || p.unidade);
+    const produtoNome = formatarNomesProdutos(produtosEfetivos);
     // Usa quantidade legada apenas quando nenhum produto tem qtd/unidade por produto
     const quantidade = temQtdPorProduto ? null : (ciclo.quantidadeLegado ?? null);
 
