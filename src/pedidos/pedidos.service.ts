@@ -285,15 +285,47 @@ export class PedidosService {
     `;
     if (!atualizado) throw new NotFoundException('Pedido não encontrado');
 
-    // Dispara evento Purchase na Meta CAPI quando pedido vira "Comprou" (assíncrono)
+    // Quando vira "Comprou": dispara Meta CAPI e decrementa estoque
     if (etapa.tipo === 'final_comprou') {
-      const [pedidoCliente] = await this.sql`
-        SELECT c.telefone FROM pedidos p
+      const [pedidoInfo] = await this.sql`
+        SELECT c.telefone, p.lembrete_id, p.produto_id, p.quantidade
+        FROM pedidos p
         JOIN clientes c ON c.id = p.cliente_id
         WHERE p.id = ${id} AND p.loja_id = ${lojaId}
       `;
-      if (pedidoCliente) {
-        this.metaAdsService.enviarEventoCompra(lojaId, pedidoCliente.telefone, valorNormalizado);
+      if (pedidoInfo) {
+        this.metaAdsService.enviarEventoCompra(lojaId, pedidoInfo.telefone, valorNormalizado);
+
+        // Baixa de estoque assíncrona (não bloqueia a resposta ao lojista)
+        void (async () => {
+          try {
+            if (pedidoInfo.lembreteId) {
+              // Decrementa pelo ciclo (multi-produto): usa quantidade de ciclo_produtos
+              const produtosCiclo = await this.sql`
+                SELECT cp.produto_id, COALESCE(cp.quantidade, 1) AS quantidade
+                FROM lembretes l
+                JOIN ciclo_produtos cp ON cp.ciclo_id = l.ciclo_id
+                WHERE l.id = ${pedidoInfo.lembreteId} AND l.loja_id = ${lojaId}
+              `;
+              for (const cp of produtosCiclo) {
+                await this.sql`
+                  UPDATE produtos
+                  SET estoque = GREATEST(0, estoque - ${cp.quantidade}),
+                      updated_at = NOW()
+                  WHERE id = ${cp.produtoId} AND loja_id = ${lojaId} AND estoque IS NOT NULL
+                `;
+              }
+            } else if (pedidoInfo.produtoId) {
+              // Pedido avulso: decrementa pelo produto e quantidade do pedido
+              await this.sql`
+                UPDATE produtos
+                SET estoque = GREATEST(0, estoque - ${pedidoInfo.quantidade ?? 1}),
+                    updated_at = NOW()
+                WHERE id = ${pedidoInfo.produtoId} AND loja_id = ${lojaId} AND estoque IS NOT NULL
+              `;
+            }
+          } catch { /* silent — baixa de estoque não deve quebrar fluxo principal */ }
+        })();
       }
     }
 

@@ -3,11 +3,15 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { DATABASE_CLIENT } from '../database/database.module';
-import { WhatsappBaileysService } from '../whatsapp/whatsapp-baileys.service';
+import { WhatsappService } from '../whatsapp/whatsapp.service';
 
 const MENSAGEM_TESTE =
-  'Oi! Este é um lembrete de teste do RecompraZap. ' +
-  'É assim que seus clientes vão receber os avisos de recompra 😊';
+  'Oi! Este é um teste do RecompraZap 👋 Apenas uma demonstração de como seus clientes vão receber os avisos de recompra. Lembrando que você personaliza a mensagem do jeito que quiser.\n\n' +
+  'Já está na hora de repor *Ração Golden para Gatos 1kg*! Posso te ajudar?\n\n' +
+  'Responda:\n' +
+  '1️⃣ *1* — Quero pedir\n' +
+  '2️⃣ *2* — Me avise depois\n' +
+  '3️⃣ *3* — Não quero mais';
 
 function normalizarTelefone(raw: string): string {
   const digits = raw.replace(/\D/g, '');
@@ -32,7 +36,7 @@ export class OnboardingService {
 
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
-    private readonly whatsapp: WhatsappBaileysService,
+    private readonly whatsapp: WhatsappService,
   ) {}
 
   async enviarTeste(lojaId: string, telefoneRaw: string): Promise<{ ok: boolean }> {
@@ -44,7 +48,7 @@ export class OnboardingService {
 
     const telefone = normalizarTelefone(telefoneRaw);
 
-    await this.whatsapp.enviarMensagem(telefone, MENSAGEM_TESTE, lojaId);
+    await this.whatsapp.enviarMensagem(lojaId, telefone, MENSAGEM_TESTE);
     this.logger.log(`Teste de onboarding enviado para ${telefone} (loja ${lojaId})`);
 
     await this.sql`

@@ -581,21 +581,47 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       }
       this.diag(session, `[Baileys] LID map carregado: ${lidRows.length} entradas (seq=${meSeq})`);
 
-      const salvarLids = async (contacts: any[]) => {
-        let novos = 0;
+      const salvarContatos = async (contacts: any[]) => {
+        let novosLid = 0;
+        const telefonesParaSalvar: { telefone: string; nome: string | null }[] = [];
+
         for (const c of contacts) {
           if (c.lid && c.id) {
             await this.salvarMapeamentoLid(c.lid, c.id, session).catch(() => {});
-            novos++;
+            novosLid++;
+          }
+          // Persiste contatos com número de telefone (para importação de clientes)
+          if (c.id && c.id.endsWith('@s.whatsapp.net')) {
+            const numero = c.id.replace('@s.whatsapp.net', '').replace(/\D/g, '');
+            if (numero.length >= 10) {
+              const tel = numero.startsWith('55') ? numero : `55${numero}`;
+              const nome: string | null = c.name ?? c.notify ?? null;
+              telefonesParaSalvar.push({ telefone: tel, nome });
+            }
           }
         }
-        if (novos > 0 || contacts.length > 5) {
+
+        if (telefonesParaSalvar.length > 0) {
+          try {
+            for (const { telefone, nome } of telefonesParaSalvar) {
+              await this.sql`
+                INSERT INTO whatsapp_contatos (loja_id, telefone, nome, updated_at)
+                VALUES (${lojaId}, ${telefone}, ${nome}, NOW())
+                ON CONFLICT (loja_id, telefone) DO UPDATE SET
+                  nome = COALESCE(EXCLUDED.nome, whatsapp_contatos.nome),
+                  updated_at = NOW()
+              `.catch(() => {});
+            }
+          } catch { /* silent */ }
+        }
+
+        if (novosLid > 0 || contacts.length > 5) {
           const semLid = contacts.filter((c: any) => c.id && !c.lid).length;
-          this.diag(session, `[Baileys] contacts sync: ${contacts.length} total, ${novos} com LID, ${semLid} sem LID`);
+          this.diag(session, `[Baileys] contacts sync: ${contacts.length} total, ${novosLid} com LID, ${semLid} sem LID, ${telefonesParaSalvar.length} telefones salvos`);
         }
       };
-      session.socket.ev.on('contacts.upsert', salvarLids);
-      session.socket.ev.on('contacts.update', salvarLids);
+      session.socket.ev.on('contacts.upsert', salvarContatos);
+      session.socket.ev.on('contacts.update', salvarContatos);
 
       this.diag(session, `[Baileys] ✔ INIT seq=${meSeq} completo — socket ativo`);
 
@@ -1480,6 +1506,23 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     session.socket = null;
     session.qrAtual = null;
     session.status = 'desconectado';
+  }
+
+  async listarContatosParaImportar(lojaId: string) {
+    // Retorna contatos do WA que ainda NÃO são clientes cadastrados nesta loja
+    return this.sql`
+      SELECT wc.telefone, wc.nome, wc.updated_at
+      FROM whatsapp_contatos wc
+      WHERE wc.loja_id = ${lojaId}
+        AND NOT EXISTS (
+          SELECT 1 FROM clientes c
+          WHERE c.loja_id = ${lojaId}
+            AND c.telefone = wc.telefone
+            AND c.deleted_at IS NULL
+        )
+      ORDER BY wc.nome ASC NULLS LAST, wc.telefone ASC
+      LIMIT 500
+    `;
   }
 
   async reconectar(lojaId: string) {

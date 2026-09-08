@@ -178,6 +178,41 @@ export class ClientesService {
     return safe;
   }
 
+  // ── Importar de contatos do WhatsApp ──────────────────────────────────────
+
+  async importarDeWhatsapp(
+    contatos: { telefone: string; nome?: string | null }[],
+    lojaId: string,
+  ) {
+    let importados = 0;
+    let ignorados = 0;
+
+    for (const c of contatos) {
+      const telefone = c.telefone?.trim();
+      if (!telefone) { ignorados++; continue; }
+
+      const nome = (c.nome?.trim()) || telefone;
+
+      const [existente] = await this.sql`
+        SELECT id FROM clientes
+        WHERE telefone = ${telefone} AND loja_id = ${lojaId} AND deleted_at IS NULL
+      `;
+
+      if (existente) {
+        ignorados++;
+        continue;
+      }
+
+      await this.sql`
+        INSERT INTO clientes (loja_id, nome, telefone, origem_lead, consentimento_whatsapp)
+        VALUES (${lojaId}, ${nome}, ${telefone}, 'whatsapp', false)
+      `;
+      importados++;
+    }
+
+    return { importados, ignorados };
+  }
+
   // ── Importar CSV ───────────────────────────────────────────────────────────
 
   async importarCsv(arquivo: Express.Multer.File, lojaId: string) {

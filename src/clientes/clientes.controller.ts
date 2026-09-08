@@ -11,11 +11,15 @@ import { CriarClienteDto } from './dto/criar-cliente.dto';
 import { AtualizarClienteDto } from './dto/atualizar-cliente.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { UsuarioAtual, UsuarioLogado } from '../common/decorators/usuario-atual.decorator';
+import { WhatsappBaileysService } from '../whatsapp/whatsapp-baileys.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('clientes')
 export class ClientesController {
-  constructor(private readonly clientesService: ClientesService) {}
+  constructor(
+    private readonly clientesService: ClientesService,
+    private readonly baileysService: WhatsappBaileysService,
+  ) {}
 
   // GET /api/v1/clientes
   @Get()
@@ -67,6 +71,22 @@ export class ClientesController {
     @UsuarioAtual() usuario: UsuarioLogado,
   ) {
     return this.clientesService.criar(dto, usuario.lojaId);
+  }
+
+  // GET /api/v1/clientes/importar-whatsapp — lista contatos do WA ainda não importados
+  @Get('importar-whatsapp')
+  listarContatosWhatsapp(@UsuarioAtual() usuario: UsuarioLogado) {
+    return this.baileysService.listarContatosParaImportar(usuario.lojaId);
+  }
+
+  // POST /api/v1/clientes/importar-whatsapp — importa contatos selecionados
+  @Post('importar-whatsapp')
+  importarDeWhatsapp(
+    @Body() body: { contatos: { telefone: string; nome?: string | null }[] },
+    @UsuarioAtual() usuario: UsuarioLogado,
+  ) {
+    if (!body?.contatos?.length) throw new BadRequestException('Nenhum contato selecionado');
+    return this.clientesService.importarDeWhatsapp(body.contatos, usuario.lojaId);
   }
 
   // POST /api/v1/clientes/importar-csv
