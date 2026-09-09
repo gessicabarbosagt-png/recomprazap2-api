@@ -334,19 +334,20 @@ export class AdminService {
     `;
     if (!loja) throw new NotFoundException('Loja não encontrada');
 
-    const [{ total_clientes }] = await this.sql`
+    // postgres.camel transforma total_clientes → totalClientes no resultado
+    const [{ totalClientes }] = await this.sql`
       SELECT COUNT(*) AS total_clientes FROM clientes
       WHERE loja_id = ${id} AND deleted_at IS NULL
     `;
-    const [{ total_pedidos }] = await this.sql`
+    const [{ totalPedidos }] = await this.sql`
       SELECT COUNT(*) AS total_pedidos FROM pedidos
       WHERE loja_id = ${id} AND deleted_at IS NULL
     `;
 
     await this.gravarAuditoria(adminId, 'excluir_loja', id, {
       nome: loja.nome,
-      total_clientes: Number(total_clientes),
-      total_pedidos: Number(total_pedidos),
+      total_clientes: Number(totalClientes),
+      total_pedidos: Number(totalPedidos),
     });
 
     await this.sql`
@@ -361,8 +362,8 @@ export class AdminService {
     return {
       ok: true,
       nome: loja.nome,
-      totalClientes: Number(total_clientes),
-      totalPedidos: Number(total_pedidos),
+      totalClientes: Number(totalClientes),
+      totalPedidos: Number(totalPedidos),
     };
   }
 }
