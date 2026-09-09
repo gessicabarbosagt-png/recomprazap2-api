@@ -98,6 +98,12 @@ export class AdminController {
     return this.adminService.resetarSenha(lojaId, userId, admin.id);
   }
 
+  // GET /api/v1/admin/planos — lista planos com stripe_price_id para verificação
+  @Get('planos')
+  listarPlanos() {
+    return this.adminService.listarPlanos();
+  }
+
   // DELETE /api/v1/admin/lojas/:id — soft-delete: desativa loja + usuários + audit
   @Delete('lojas/:id')
   @HttpCode(HttpStatus.OK)

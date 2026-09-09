@@ -402,6 +402,12 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
         // migration_019: origem em whatsapp_contatos ('contato' = agenda, 'conversa' = histórico)
         await sql`ALTER TABLE whatsapp_contatos ADD COLUMN IF NOT EXISTS origem VARCHAR(20) NOT NULL DEFAULT 'contato'`.catch(() => {});
 
+        // migration_020: stripe_price_id em planos_catalogo (IDs de produção do Stripe)
+        await sql`ALTER TABLE planos_catalogo ADD COLUMN IF NOT EXISTS stripe_price_id TEXT`.catch(() => {});
+        await sql`UPDATE planos_catalogo SET stripe_price_id = 'price_1UDtMoC0MjF3NlWDARcFd53e' WHERE slug = 'starter' AND (stripe_price_id IS NULL OR stripe_price_id != 'price_1UDtMoC0MjF3NlWDARcFd53e')`.catch(() => {});
+        await sql`UPDATE planos_catalogo SET stripe_price_id = 'price_1UDtMoC0MjF3NlWD141nhBC3' WHERE slug = 'pro'     AND (stripe_price_id IS NULL OR stripe_price_id != 'price_1UDtMoC0MjF3NlWD141nhBC3')`.catch(() => {});
+        await sql`UPDATE planos_catalogo SET stripe_price_id = 'price_1UDtMlC0MjF3NlWDlIBYxYvR' WHERE slug = 'rede'    AND (stripe_price_id IS NULL OR stripe_price_id != 'price_1UDtMlC0MjF3NlWDlIBYxYvR')`.catch(() => {});
+
         return sql;
       },
     },

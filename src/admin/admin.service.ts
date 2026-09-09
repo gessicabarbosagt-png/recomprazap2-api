@@ -366,4 +366,15 @@ export class AdminService {
       totalPedidos: Number(totalPedidos),
     };
   }
+
+  // ----------------------------------------------------------------
+  // Retorna planos_catalogo com stripe_price_id (verificação de config)
+  // ----------------------------------------------------------------
+  async listarPlanos() {
+    return this.sql`
+      SELECT slug, nome, preco_mensal, stripe_price_id
+      FROM planos_catalogo
+      ORDER BY preco_mensal
+    `;
+  }
 }
