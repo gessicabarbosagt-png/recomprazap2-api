@@ -10,7 +10,8 @@ type AcaoAuditoria =
   | 'desativar_loja'
   | 'ativar_loja'
   | 'resetar_senha_lojista'
-  | 'alterar_plano';
+  | 'alterar_plano'
+  | 'excluir_loja';
 
 function gerarSenhaTemp(): string {
   return crypto.randomBytes(8).toString('base64url').slice(0, 10);
@@ -322,5 +323,46 @@ export class AdminService {
         ON CONFLICT DO NOTHING
       `.catch(() => {});
     }
+  }
+
+  // ----------------------------------------------------------------
+  // Soft-delete de loja (admin): desativa loja + usuários + audit
+  // ----------------------------------------------------------------
+  async excluirLoja(id: string, adminId: string) {
+    const [loja] = await this.sql`
+      SELECT id, nome FROM lojas WHERE id = ${id} AND deleted_at IS NULL
+    `;
+    if (!loja) throw new NotFoundException('Loja não encontrada');
+
+    const [{ total_clientes }] = await this.sql`
+      SELECT COUNT(*) AS total_clientes FROM clientes
+      WHERE loja_id = ${id} AND deleted_at IS NULL
+    `;
+    const [{ total_pedidos }] = await this.sql`
+      SELECT COUNT(*) AS total_pedidos FROM pedidos
+      WHERE loja_id = ${id} AND deleted_at IS NULL
+    `;
+
+    await this.gravarAuditoria(adminId, 'excluir_loja', id, {
+      nome: loja.nome,
+      total_clientes: Number(total_clientes),
+      total_pedidos: Number(total_pedidos),
+    });
+
+    await this.sql`
+      UPDATE lojas SET ativa = FALSE, deleted_at = NOW(), updated_at = NOW()
+      WHERE id = ${id}
+    `;
+    await this.sql`
+      UPDATE usuarios SET ativo = FALSE, deleted_at = NOW(), updated_at = NOW()
+      WHERE loja_id = ${id}
+    `;
+
+    return {
+      ok: true,
+      nome: loja.nome,
+      totalClientes: Number(total_clientes),
+      totalPedidos: Number(total_pedidos),
+    };
   }
 }

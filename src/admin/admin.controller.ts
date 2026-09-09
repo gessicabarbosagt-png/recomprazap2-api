@@ -1,5 +1,5 @@
 import {
-  Controller, UseGuards, Get, Post, Patch, Param, Body, HttpCode, HttpStatus,
+  Controller, UseGuards, Get, Post, Patch, Delete, Param, Body, HttpCode, HttpStatus,
 } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { AdminGuard } from './admin.guard';
@@ -96,6 +96,16 @@ export class AdminController {
     @UsuarioAtual() admin: UsuarioLogado,
   ) {
     return this.adminService.resetarSenha(lojaId, userId, admin.id);
+  }
+
+  // DELETE /api/v1/admin/lojas/:id — soft-delete: desativa loja + usuários + audit
+  @Delete('lojas/:id')
+  @HttpCode(HttpStatus.OK)
+  excluirLoja(
+    @Param('id') id: string,
+    @UsuarioAtual() admin: UsuarioLogado,
+  ) {
+    return this.adminService.excluirLoja(id, admin.id);
   }
 
   // POST /api/v1/admin/notificacoes/loja/:lojaId — notifica uma loja específica
