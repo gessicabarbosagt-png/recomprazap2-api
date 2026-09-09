@@ -71,7 +71,7 @@ export function normalizarTexto(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 }
 
-export type StatusConexao = 'desconectado' | 'aguardando' | 'conectado';
+export type StatusConexao = 'desconectado' | 'aguardando' | 'conectado' | 'erro_numero_duplicado';
 
 // Estado isolado por loja — cada loja tem seu próprio socket Baileys
 interface LojaSession {
@@ -448,6 +448,35 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           const waNumero = session.socket.user?.id
             ? jidNormalizedUser(session.socket.user.id).replace('@s.whatsapp.net', '')
             : null;
+
+          // Proteção multi-tenant: rejeita se este número já está ativo em outra loja.
+          // A sessão existente (mais antiga) nunca é derrubada automaticamente.
+          if (waNumero) {
+            const [conflito] = await this.sql`
+              SELECT id, nome FROM lojas
+              WHERE wa_numero = ${waNumero}
+                AND id <> ${lojaId}
+                AND wa_status = 'conectado'
+                AND deleted_at IS NULL
+              LIMIT 1
+            `.catch(() => [] as any[]);
+
+            if (conflito) {
+              this.diag(session, `[Baileys] ❌ CONFLITO: número ${waNumero} já ativo na loja "${conflito.nome}" (${conflito.id}) — recusando conexão`);
+              session.status = 'erro_numero_duplicado';
+              session.qrAtual = null;
+              this.sql`
+                UPDATE lojas
+                SET wa_status = 'erro_numero_duplicado',
+                    wa_atualizado_em = NOW()
+                WHERE id = ${lojaId}
+              `.catch(() => {});
+              // Encerra o socket desta sessão imediatamente
+              try { session.socket?.end(new Error('numero_duplicado')); } catch { /* ignora */ }
+              return;
+            }
+          }
+
           this.sql`
             UPDATE lojas
             SET wa_status = 'conectado', wa_atualizado_em = NOW(),
