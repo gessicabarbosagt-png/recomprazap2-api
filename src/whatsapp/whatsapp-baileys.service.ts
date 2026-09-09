@@ -567,20 +567,6 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
         }
       });
 
-      this.diag(session, `[Baileys] listeners registrados (seq=${meSeq}) — carregando LID map`);
-
-      // Carrega mapeamentos LID desta loja (após listeners — socket já está protegido)
-      const lidRows = await this.sql`SELECT lid, phone_jid FROM whatsapp_lid_map WHERE loja_id = ${lojaId}`;
-      for (const r of lidRows) {
-        session.lidToPhone.set(r.lid, r.phoneJid);
-      }
-      if (lidRows.length > 0 && session.socket?.signalRepository?.lidMapping) {
-        await session.socket.signalRepository.lidMapping
-          .storeLIDPNMappings(lidRows.map((r: any) => ({ lid: r.lid, pn: r.phoneJid })))
-          .catch(() => {});
-      }
-      this.diag(session, `[Baileys] LID map carregado: ${lidRows.length} entradas (seq=${meSeq})`);
-
       const salvarContatos = async (contacts: any[]) => {
         let novosLid = 0;
         const telefonesParaSalvar: { telefone: string; nome: string | null }[] = [];
@@ -622,6 +608,20 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       };
       session.socket.ev.on('contacts.upsert', salvarContatos);
       session.socket.ev.on('contacts.update', salvarContatos);
+
+      this.diag(session, `[Baileys] listeners registrados (seq=${meSeq}) — carregando LID map`);
+
+      // Carrega mapeamentos LID desta loja (após listeners — socket já está protegido)
+      const lidRows = await this.sql`SELECT lid, phone_jid FROM whatsapp_lid_map WHERE loja_id = ${lojaId}`;
+      for (const r of lidRows) {
+        session.lidToPhone.set(r.lid, r.phoneJid);
+      }
+      if (lidRows.length > 0 && session.socket?.signalRepository?.lidMapping) {
+        await session.socket.signalRepository.lidMapping
+          .storeLIDPNMappings(lidRows.map((r: any) => ({ lid: r.lid, pn: r.phoneJid })))
+          .catch(() => {});
+      }
+      this.diag(session, `[Baileys] LID map carregado: ${lidRows.length} entradas (seq=${meSeq})`);
 
       this.diag(session, `[Baileys] ✔ INIT seq=${meSeq} completo — socket ativo`);
 
