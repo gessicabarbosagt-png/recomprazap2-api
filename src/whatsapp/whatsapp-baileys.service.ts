@@ -591,10 +591,11 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
           try {
             for (const { telefone, nome } of telefonesParaSalvar) {
               await this.sql`
-                INSERT INTO whatsapp_contatos (loja_id, telefone, nome, updated_at)
-                VALUES (${lojaId}, ${telefone}, ${nome}, NOW())
+                INSERT INTO whatsapp_contatos (loja_id, telefone, nome, origem, updated_at)
+                VALUES (${lojaId}, ${telefone}, ${nome}, 'contato', NOW())
                 ON CONFLICT (loja_id, telefone) DO UPDATE SET
                   nome = COALESCE(EXCLUDED.nome, whatsapp_contatos.nome),
+                  origem = 'contato',
                   updated_at = NOW()
               `.catch(() => {});
             }
@@ -608,6 +609,38 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
       };
       session.socket.ev.on('contacts.upsert', salvarContatos);
       session.socket.ev.on('contacts.update', salvarContatos);
+
+      session.socket.ev.on('messaging-history.set', async ({ chats, contacts }: any) => {
+        // Contatos do histórico (mesma estrutura que contacts.upsert)
+        if (contacts?.length) {
+          await salvarContatos(contacts).catch(() => {});
+        }
+
+        // Chats = conversas individuais sem necessariamente estar na agenda
+        const telefonesConversas: { telefone: string; nome: string | null }[] = [];
+        for (const chat of (chats ?? [])) {
+          const jid: string = chat.id ?? '';
+          if (!jid.endsWith('@s.whatsapp.net')) continue;
+          const numero = jid.replace('@s.whatsapp.net', '').replace(/\D/g, '');
+          if (numero.length < 10) continue;
+          const tel = numero.startsWith('55') ? numero : `55${numero}`;
+          telefonesConversas.push({ telefone: tel, nome: chat.name ?? null });
+        }
+
+        if (telefonesConversas.length > 0) {
+          for (const { telefone, nome } of telefonesConversas) {
+            await this.sql`
+              INSERT INTO whatsapp_contatos (loja_id, telefone, nome, origem, updated_at)
+              VALUES (${lojaId}, ${telefone}, ${nome}, 'conversa', NOW())
+              ON CONFLICT (loja_id, telefone) DO UPDATE SET
+                nome = COALESCE(EXCLUDED.nome, whatsapp_contatos.nome),
+                origem = CASE WHEN whatsapp_contatos.origem = 'contato' THEN 'contato' ELSE 'conversa' END,
+                updated_at = NOW()
+            `.catch(() => {});
+          }
+          this.diag(session, `[Baileys] messaging-history.set: ${telefonesConversas.length} conversas salvas, ${contacts?.length ?? 0} contatos`);
+        }
+      });
 
       this.diag(session, `[Baileys] listeners registrados (seq=${meSeq}) — carregando LID map`);
 

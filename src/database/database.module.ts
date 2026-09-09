@@ -399,6 +399,9 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
         `.catch(() => {});
         await sql`CREATE INDEX IF NOT EXISTS idx_atividade_log_loja ON atividade_log(loja_id, criado_em DESC)`.catch(() => {});
 
+        // migration_019: origem em whatsapp_contatos ('contato' = agenda, 'conversa' = histórico)
+        await sql`ALTER TABLE whatsapp_contatos ADD COLUMN IF NOT EXISTS origem VARCHAR(20) NOT NULL DEFAULT 'contato'`.catch(() => {});
+
         return sql;
       },
     },
