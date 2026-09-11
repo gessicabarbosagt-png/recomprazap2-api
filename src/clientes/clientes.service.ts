@@ -1,5 +1,6 @@
 import {
   Injectable, Inject, NotFoundException, ConflictException, BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { DATABASE_CLIENT } from '../database/database.module';
 import { CriarClienteDto } from './dto/criar-cliente.dto';
@@ -41,7 +42,26 @@ export class ClientesService {
     return cliente;
   }
 
+  private async verificarLimitePlano(lojaId: string): Promise<{ limite: number | null; total: number }> {
+    const [row] = await this.sql`
+      SELECT pc.limite_clientes,
+        (SELECT COUNT(*)::int FROM clientes
+         WHERE loja_id = ${lojaId} AND deleted_at IS NULL AND ativo = TRUE) AS total
+      FROM lojas l
+      LEFT JOIN planos_catalogo pc ON pc.slug = l.plano_slug
+      WHERE l.id = ${lojaId}
+    `;
+    return { limite: row?.limite_clientes ?? null, total: row?.total ?? 0 };
+  }
+
   async criar(dto: CriarClienteDto, lojaId: string) {
+    const { limite, total } = await this.verificarLimitePlano(lojaId);
+    if (limite !== null && total >= limite) {
+      throw new ForbiddenException(
+        `Você atingiu o limite de ${limite} cliente${limite !== 1 ? 's' : ''} do seu plano. Faça upgrade para adicionar mais.`,
+      );
+    }
+
     const [existente] = await this.sql`
       SELECT id FROM clientes
       WHERE telefone = ${dto.telefone}
@@ -210,7 +230,8 @@ export class ClientesService {
       importados++;
     }
 
-    return { importados, ignorados };
+    const { limite, total } = await this.verificarLimitePlano(lojaId);
+    return { importados, ignorados, acimaDeLimite: limite !== null && total > limite };
   }
 
   // ── Importar CSV ───────────────────────────────────────────────────────────
@@ -312,11 +333,13 @@ export class ClientesService {
       }
     }
 
+    const { limite, total } = await this.verificarLimitePlano(lojaId);
     return {
       importados,
       atualizados,
       erros,
       totalLinhas: rows.length,
+      acimaDeLimite: limite !== null && total > limite,
     };
   }
 
