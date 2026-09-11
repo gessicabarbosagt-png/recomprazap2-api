@@ -408,6 +408,11 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
         await sql`UPDATE planos_catalogo SET stripe_price_id = 'price_1UDtMoC0MjF3NlWD141nhBC3' WHERE slug = 'pro'     AND (stripe_price_id IS NULL OR stripe_price_id != 'price_1UDtMoC0MjF3NlWD141nhBC3')`.catch(() => {});
         await sql`UPDATE planos_catalogo SET stripe_price_id = 'price_1UDtMlC0MjF3NlWDlIBYxYvR' WHERE slug = 'rede'    AND (stripe_price_id IS NULL OR stripe_price_id != 'price_1UDtMlC0MjF3NlWDlIBYxYvR')`.catch(() => {});
 
+        // migration_021: onboarding_dispensado — encerra manualmente o checklist de uma loja (ação admin)
+        await sql`ALTER TABLE lojas ADD COLUMN IF NOT EXISTS onboarding_dispensado BOOLEAN NOT NULL DEFAULT FALSE`.catch(() => {});
+        // BeeUp Teste é conta de demonstração; checklist não deve aparecer em gravações de vídeo
+        await sql`UPDATE lojas SET onboarding_dispensado = TRUE, updated_at = NOW() WHERE nome = 'BeeUp Teste' AND deleted_at IS NULL`.catch(() => {});
+
         return sql;
       },
     },

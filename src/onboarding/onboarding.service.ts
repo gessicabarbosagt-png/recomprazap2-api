@@ -62,6 +62,7 @@ export class OnboardingService {
   async checklist(lojaId: string) {
     const [row] = await this.sql`
       SELECT
+        l.onboarding_dispensado,
         l.onboarding_teste_enviado,
         l.wa_status,
         (SELECT COUNT(*) FROM produtos p WHERE p.loja_id = l.id AND p.deleted_at IS NULL)::int AS total_produtos,
@@ -70,6 +71,17 @@ export class OnboardingService {
       FROM lojas l
       WHERE l.id = ${lojaId} AND l.deleted_at IS NULL
     `;
+
+    if (Boolean(row?.onboardingDispensado)) {
+      return {
+        waConectado: true,
+        testEnviado: true,
+        produtosSuficientes: true,
+        clientesSuficientes: true,
+        pagamentoConfigurado: true,
+        completo: true,
+      };
+    }
 
     const waConectado          = row?.waStatus === 'conectado';
     const testEnviado          = Boolean(row?.onboardingTesteEnviado);
