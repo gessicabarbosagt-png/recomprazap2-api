@@ -27,10 +27,12 @@ const {
 
 // Detecta intenção de adiamento de lembrete na mensagem do cliente.
 // Retorna { dias, precisaRevisao } ou null se não houver padrão reconhecido.
+// Só deve ser chamada quando já há sessão ativa (lembrete recentemente enviado).
 function detectarIntencaoAdiamento(texto: string): { dias: number; precisaRevisao: boolean } | null {
   const norm = normalizarTexto(texto);
 
   // Numérico: "X dias", "em X dias", "daqui a X dias", etc.
+  // Exige ao menos um espaço entre número e "dia(s)" para evitar matches em datas (ex: "16/09").
   const numMatch = norm.match(/(\d+)\s+dias?/);
   if (numMatch) return { dias: parseInt(numMatch[1], 10), precisaRevisao: false };
 
@@ -39,8 +41,10 @@ function detectarIntencaoAdiamento(texto: string): { dias: number; precisaRevisa
   if (/semana\s+que\s+vem|proxima\s+semana/.test(norm)) return { dias: 7, precisaRevisao: false };
   if (/mes\s+que\s+vem|proximo\s+mes/.test(norm)) return { dias: 30, precisaRevisao: false };
 
-  // Vagos → assume 7 dias + marca para revisão do lojista
-  if (/agora\s+nao|nao\s+agora|(?:^|\s)depois(?:\s|$)|mais\s+tarde/.test(norm)) {
+  // Vagos → assume 7 dias + marca para revisão do lojista.
+  // "depois" removido: é palavra extremamente comum em PT-BR e aparece em contextos
+  // alheios a adiamento (inclusive no próprio template de lembrete: "Me avise depois").
+  if (/agora\s+nao|nao\s+agora|mais\s+tarde/.test(norm)) {
     return { dias: 7, precisaRevisao: true };
   }
 
@@ -723,6 +727,17 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     const numero = jid.replace('@s.whatsapp.net', '');
     const telefone = '+' + numero;
 
+    // Diagnóstico: avisa se o sender é o socket WhatsApp de outra loja do sistema.
+    // Iteração em memória (sem I/O); só dispara no cenário raro de eco cruzado.
+    for (const [outroLojaId, outraSession] of this.sessions) {
+      if (outroLojaId === lojaId) continue;
+      const socketPhone = outraSession.socket?.user?.id?.split(':')[0] ?? '';
+      if (socketPhone && socketPhone === numero) {
+        this.diag(session, `[AVISO] msg recebida de ${telefone} que é socket ativo de loja=${outroLojaId} — possível eco cruzado entre lojas`);
+        break;
+      }
+    }
+
     const texto =
       msg.message?.conversation ??
       msg.message?.extendedTextMessage?.text ??
@@ -867,18 +882,27 @@ export class WhatsappBaileysService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (cliente) {
-      // Detecção de adiamento tem prioridade sobre o fluxo estruturado
+      // Adiamento NLP: gated por sessão ativa (lembrete enviado recentemente para este
+      // cliente nesta loja). Sem sessão não tentamos — evita falso positivo em mensagens
+      // normais de conversa que contenham palavras como "amanhã" ou "mais tarde".
       if (texto) {
-        const intencao = detectarIntencaoAdiamento(texto);
-        if (intencao) {
-          this.diag(session, `[ADIAMENTO] padrão detectado em "${texto.slice(0, 60)}" → ${intencao.dias} dias revisao=${intencao.precisaRevisao}`);
-          const processado = await this.processarAdiamento(
-            cliente.id, lojaId, telefone, intencao.dias, intencao.precisaRevisao, session,
-          ).catch((e: any) => {
-            this.diag(session, `[ADIAMENTO] erro: ${e?.message}`);
-            return false;
-          });
-          if (processado) return;
+        const [sessaoParaAdiamento] = await this.sql`
+          SELECT id FROM sessao_conversa
+          WHERE loja_id = ${lojaId} AND cliente_id = ${cliente.id} AND expira_em > NOW()
+          LIMIT 1
+        `;
+        if (sessaoParaAdiamento) {
+          const intencao = detectarIntencaoAdiamento(texto);
+          if (intencao) {
+            this.diag(session, `[ADIAMENTO] padrão detectado em "${texto.slice(0, 60)}" → ${intencao.dias} dias revisao=${intencao.precisaRevisao}`);
+            const processado = await this.processarAdiamento(
+              cliente.id, lojaId, telefone, intencao.dias, intencao.precisaRevisao, session,
+            ).catch((e: any) => {
+              this.diag(session, `[ADIAMENTO] erro: ${e?.message}`);
+              return false;
+            });
+            if (processado) return;
+          }
         }
       }
 
