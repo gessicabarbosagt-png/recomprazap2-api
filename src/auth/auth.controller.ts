@@ -5,6 +5,8 @@ import { Throttle } from '@nestjs/throttler';
 import { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
+import { EsqueciSenhaDto } from './dto/esqueci-senha.dto';
+import { RedefinirSenhaDto } from './dto/redefinir-senha.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { UsuarioAtual, UsuarioLogado } from '../common/decorators/usuario-atual.decorator';
 
@@ -58,5 +60,24 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   logout(@Res({ passthrough: true }) res: Response) {
     res.clearCookie(COOKIE_NAME, cookieOptions(0));
+  }
+
+  // POST /api/v1/auth/esqueci-senha
+  // Resposta sempre genérica para não revelar se o e-mail está cadastrado.
+  @Throttle({ default: { limit: 5, ttl: 900_000 } })
+  @Post('esqueci-senha')
+  @HttpCode(HttpStatus.OK)
+  async esqueceuSenha(@Body() dto: EsqueciSenhaDto) {
+    await this.authService.esqueceuSenha(dto.email);
+    return { message: 'Se esse e-mail estiver cadastrado, você receberá um link em breve.' };
+  }
+
+  // POST /api/v1/auth/redefinir-senha
+  @Throttle({ default: { limit: 10, ttl: 900_000 } })
+  @Post('redefinir-senha')
+  @HttpCode(HttpStatus.OK)
+  async redefinirSenha(@Body() dto: RedefinirSenhaDto) {
+    await this.authService.redefinirSenha(dto.token, dto.novaSenha);
+    return { message: 'Senha redefinida com sucesso.' };
   }
 }

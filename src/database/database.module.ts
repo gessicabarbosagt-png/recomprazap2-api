@@ -413,6 +413,11 @@ export const DATABASE_CLIENT = 'DATABASE_CLIENT';
         // BeeUp Teste é conta de demonstração; checklist não deve aparecer em gravações de vídeo
         await sql`UPDATE lojas SET onboarding_dispensado = TRUE, updated_at = NOW() WHERE nome = 'BeeUp Teste' AND deleted_at IS NULL`.catch(() => {});
 
+        // migration_022: redefinição de senha por e-mail — token (hash), expiração e flag de e-mail confirmado
+        await sql`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS token_redefinicao TEXT`.catch(() => {});
+        await sql`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS token_expira_em TIMESTAMPTZ`.catch(() => {});
+        await sql`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS email_confirmado BOOLEAN NOT NULL DEFAULT FALSE`.catch(() => {});
+
         return sql;
       },
     },

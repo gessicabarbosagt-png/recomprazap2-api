@@ -58,6 +58,52 @@ export class EmailService {
     }
   }
 
+  // ── Redefinição / definição de senha ─────────────────────────────────────────
+
+  async enviarRedefinicaoSenha(destinatario: string, token: string): Promise<void> {
+    const link = `https://app.recomprazap.com.br/redefinir-senha?token=${token}`;
+    const subject = 'RecompraZap — Redefinição de senha';
+    await this.enviar(destinatario, subject, `<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="UTF-8"></head>
+<body style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#1f2937;background:#ffffff">
+<div style="text-align:center;margin-bottom:24px">
+  <span style="font-size:32px">♻️</span>
+  <h1 style="font-size:20px;margin:8px 0 0;color:#111827">RecompraZap</h1>
+</div>
+<h2 style="font-size:17px;margin:0 0 12px">Redefinição de senha</h2>
+<p style="margin:0 0 16px;line-height:1.6">Recebemos uma solicitação de redefinição de senha para sua conta. Clique no botão abaixo para criar uma nova senha. O link expira em <strong>1 hora</strong>.</p>
+<div style="text-align:center;margin:28px 0">
+  <a href="${link}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;padding:12px 32px;border-radius:6px;font-weight:600;font-size:15px">Redefinir senha</a>
+</div>
+<p style="margin:0 0 8px;font-size:13px;color:#6b7280">Se o botão não funcionar, copie e cole este link no navegador:</p>
+<p style="margin:0 0 24px;font-size:12px;color:#6b7280;word-break:break-all">${link}</p>
+<hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">
+<p style="color:#9ca3af;font-size:12px;margin:0">Se você não solicitou a redefinição, ignore este e-mail. Sua senha permanece a mesma.</p>
+</body></html>`);
+  }
+
+  async enviarDefinicaoSenhaInicial(destinatario: string, token: string, nomeUsuario: string): Promise<void> {
+    const link = `https://app.recomprazap.com.br/redefinir-senha?token=${token}`;
+    const subject = 'RecompraZap — Bem-vindo! Defina sua senha';
+    await this.enviar(destinatario, subject, `<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="UTF-8"></head>
+<body style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#1f2937;background:#ffffff">
+<div style="text-align:center;margin-bottom:24px">
+  <span style="font-size:32px">♻️</span>
+  <h1 style="font-size:20px;margin:8px 0 0;color:#111827">RecompraZap</h1>
+</div>
+<h2 style="font-size:17px;margin:0 0 12px">Olá, ${this.esc(nomeUsuario)}! Sua conta está pronta.</h2>
+<p style="margin:0 0 16px;line-height:1.6">Sua loja no RecompraZap foi criada. Para começar a usar, clique no botão abaixo e defina sua senha de acesso. O link expira em <strong>1 hora</strong>.</p>
+<div style="text-align:center;margin:28px 0">
+  <a href="${link}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;padding:12px 32px;border-radius:6px;font-weight:600;font-size:15px">Definir minha senha</a>
+</div>
+<p style="margin:0 0 8px;font-size:13px;color:#6b7280">Se o botão não funcionar, copie e cole este link no navegador:</p>
+<p style="margin:0 0 24px;font-size:12px;color:#6b7280;word-break:break-all">${link}</p>
+<hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">
+<p style="color:#9ca3af;font-size:12px;margin:0">Enviado automaticamente pelo RecompraZap. Se não esperava este e-mail, entre em contato com o suporte.</p>
+</body></html>`);
+  }
+
   // ── Alertas imediatos ────────────────────────────────────────────────────────
 
   async enviarAlertaFalhaSilenciosa(lojaId: string, lojaNome: string): Promise<void> {

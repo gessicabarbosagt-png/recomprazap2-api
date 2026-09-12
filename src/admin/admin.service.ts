@@ -4,6 +4,7 @@ import {
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { DATABASE_CLIENT } from '../database/database.module';
+import { EmailService } from '../email/email.service';
 
 type AcaoAuditoria =
   | 'criar_loja'
@@ -13,8 +14,11 @@ type AcaoAuditoria =
   | 'alterar_plano'
   | 'excluir_loja';
 
-function gerarSenhaTemp(): string {
-  return crypto.randomBytes(8).toString('base64url').slice(0, 10);
+function gerarTokenRedefinicao(): { rawToken: string; tokenHash: string; expiraEm: Date } {
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  const expiraEm = new Date(Date.now() + 60 * 60 * 1000);
+  return { rawToken, tokenHash, expiraEm };
 }
 
 const MENSAGEM_LEMBRETE_PADRAO =
@@ -33,6 +37,7 @@ const OPCOES_PADRAO = JSON.stringify([
 export class AdminService {
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
+    private readonly emailService: EmailService,
   ) {}
 
   // ----------------------------------------------------------------
@@ -179,8 +184,10 @@ export class AdminService {
       .slice(0, 60)
       + '-' + Date.now().toString(36);
 
-    const senhaTemp = gerarSenhaTemp();
-    const senhaHash = await bcrypt.hash(senhaTemp, 12);
+    // Senha não é definida pelo admin — placeholder nunca compartilhado.
+    // O lojista define a própria senha pelo link enviado por e-mail.
+    const placeholderHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 4);
+    const { rawToken, tokenHash, expiraEm } = gerarTokenRedefinicao();
 
     const [loja] = await this.sql`
       INSERT INTO lojas (nome, email, slug)
@@ -189,8 +196,8 @@ export class AdminService {
     `;
 
     const [usuario] = await this.sql`
-      INSERT INTO usuarios (loja_id, nome, email, senha_hash, perfil, role)
-      VALUES (${loja.id}, ${dto.usuarioNome}, ${dto.usuarioEmail}, ${senhaHash}, 'dono', 'lojista')
+      INSERT INTO usuarios (loja_id, nome, email, senha_hash, perfil, role, token_redefinicao, token_expira_em)
+      VALUES (${loja.id}, ${dto.usuarioNome}, ${dto.usuarioEmail}, ${placeholderHash}, 'dono', 'lojista', ${tokenHash}, ${expiraEm})
       RETURNING id, nome, email, perfil
     `;
 
@@ -201,7 +208,10 @@ export class AdminService {
       usuario_email: dto.usuarioEmail,
     });
 
-    return { loja, usuario, senhaTemporaria: senhaTemp };
+    // Envia e-mail de "primeiro acesso" — lojista define a própria senha pelo link
+    await this.emailService.enviarDefinicaoSenhaInicial(dto.usuarioEmail, rawToken, dto.usuarioNome);
+
+    return { loja, usuario, emailEnviado: true };
   }
 
   // ----------------------------------------------------------------
@@ -259,21 +269,24 @@ export class AdminService {
   // ----------------------------------------------------------------
   async resetarSenha(lojaId: string, userId: string, adminId: string) {
     const [usuario] = await this.sql`
-      SELECT id FROM usuarios WHERE id = ${userId} AND loja_id = ${lojaId} AND deleted_at IS NULL
+      SELECT id, email, nome FROM usuarios
+      WHERE id = ${userId} AND loja_id = ${lojaId} AND deleted_at IS NULL
     `;
     if (!usuario) throw new NotFoundException('Usuário não encontrado');
 
-    const senhaTemp = gerarSenhaTemp();
-    const senhaHash = await bcrypt.hash(senhaTemp, 12);
+    const { rawToken, tokenHash, expiraEm } = gerarTokenRedefinicao();
 
     await this.sql`
-      UPDATE usuarios SET senha_hash = ${senhaHash}, updated_at = NOW()
+      UPDATE usuarios
+      SET token_redefinicao = ${tokenHash}, token_expira_em = ${expiraEm}, updated_at = NOW()
       WHERE id = ${userId}
     `;
 
     await this.gravarAuditoria(adminId, 'resetar_senha_lojista', lojaId, { usuario_id: userId });
 
-    return { senhaTemporaria: senhaTemp };
+    await this.emailService.enviarRedefinicaoSenha(usuario.email, rawToken);
+
+    return { emailEnviado: true, usuarioEmail: usuario.email };
   }
 
   // ----------------------------------------------------------------

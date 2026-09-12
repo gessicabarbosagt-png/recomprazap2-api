@@ -1,7 +1,12 @@
-import { Injectable, UnauthorizedException, Inject, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable, UnauthorizedException, BadRequestException,
+  Inject, Logger, NotFoundException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
 import { DATABASE_CLIENT } from '../database/database.module';
+import { EmailService } from '../email/email.service';
 import { LoginDto } from './dto/login.dto';
 import { UsuarioLogado } from '../common/decorators/usuario-atual.decorator';
 
@@ -12,6 +17,7 @@ export class AuthService {
   constructor(
     @Inject(DATABASE_CLIENT) private readonly sql: any,
     private readonly jwtService: JwtService,
+    private readonly emailService: EmailService,
   ) {}
 
   async login(loginDto: LoginDto, ip: string) {
@@ -62,6 +68,72 @@ export class AuthService {
           : null,
       },
     };
+  }
+
+  // ── Redefinição de senha ─────────────────────────────────────────────────────
+
+  private gerarTokenRedefinicao(): { rawToken: string; tokenHash: string; expiraEm: Date } {
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const expiraEm = new Date(Date.now() + 60 * 60 * 1000); // 1 hora
+    return { rawToken, tokenHash, expiraEm };
+  }
+
+  async esqueceuSenha(email: string): Promise<void> {
+    const RESPOSTA_GENERICA = undefined; // sempre retorna sucesso, sem revelar se e-mail existe
+
+    const [usuario] = await this.sql`
+      SELECT id, nome, email FROM usuarios
+      WHERE email = ${email} AND deleted_at IS NULL AND ativo = TRUE
+    `;
+
+    if (!usuario) {
+      this.logger.log(`[ESQUECI_SENHA] e-mail não encontrado: ${email} — resposta genérica`);
+      return RESPOSTA_GENERICA;
+    }
+
+    const { rawToken, tokenHash, expiraEm } = this.gerarTokenRedefinicao();
+
+    await this.sql`
+      UPDATE usuarios
+      SET token_redefinicao = ${tokenHash}, token_expira_em = ${expiraEm}, updated_at = NOW()
+      WHERE id = ${usuario.id}
+    `;
+
+    await this.emailService.enviarRedefinicaoSenha(usuario.email, rawToken);
+    this.logger.log(`[ESQUECI_SENHA] link enviado para ${email}`);
+
+    return RESPOSTA_GENERICA;
+  }
+
+  async redefinirSenha(rawToken: string, novaSenha: string): Promise<void> {
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    const [usuario] = await this.sql`
+      SELECT id FROM usuarios
+      WHERE token_redefinicao = ${tokenHash}
+        AND token_expira_em > NOW()
+        AND deleted_at IS NULL
+        AND ativo = TRUE
+    `;
+
+    if (!usuario) {
+      throw new BadRequestException('Token inválido ou expirado. Solicite um novo link.');
+    }
+
+    const senhaHash = await bcrypt.hash(novaSenha, 12);
+
+    await this.sql`
+      UPDATE usuarios
+      SET senha_hash        = ${senhaHash},
+          token_redefinicao = NULL,
+          token_expira_em   = NULL,
+          email_confirmado  = TRUE,
+          updated_at        = NOW()
+      WHERE id = ${usuario.id}
+    `;
+
+    this.logger.log(`[REDEFINIR_SENHA] senha atualizada para usuario id=${usuario.id}`);
   }
 
   async getMe(payload: UsuarioLogado) {
