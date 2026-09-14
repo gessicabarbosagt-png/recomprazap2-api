@@ -1,6 +1,6 @@
 import {
   Controller, UseGuards, Get, Post, Patch, Delete,
-  Body, Param, HttpCode, HttpStatus,
+  Body, Param, HttpCode, HttpStatus, ParseUUIDPipe,
 } from '@nestjs/common';
 import { WhatsappService } from './whatsapp.service';
 import { WhatsappBaileysService } from './whatsapp-baileys.service';
@@ -83,7 +83,7 @@ export class WhatsappController {
   @Patch('conversas/:clienteId/lida')
   @HttpCode(HttpStatus.NO_CONTENT)
   async marcarLida(
-    @Param('clienteId') clienteId: string,
+    @Param('clienteId', ParseUUIDPipe) clienteId: string,
     @UsuarioAtual() usuario: UsuarioLogado,
   ) {
     await this.whatsappService.marcarConversaLida(usuario.lojaId, clienteId);
@@ -94,7 +94,7 @@ export class WhatsappController {
   @Delete('conversas/:clienteId')
   @HttpCode(HttpStatus.NO_CONTENT)
   async excluirConversa(
-    @Param('clienteId') clienteId: string,
+    @Param('clienteId', ParseUUIDPipe) clienteId: string,
     @UsuarioAtual() usuario: UsuarioLogado,
   ) {
     await this.whatsappService.excluirConversa(usuario.lojaId, clienteId);

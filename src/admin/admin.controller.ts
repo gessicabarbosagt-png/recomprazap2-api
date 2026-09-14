@@ -1,5 +1,5 @@
 import {
-  Controller, UseGuards, Get, Post, Patch, Delete, Param, Body, HttpCode, HttpStatus,
+  Controller, UseGuards, Get, Post, Patch, Delete, Param, Body, HttpCode, HttpStatus, ParseUUIDPipe,
 } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { AdminGuard } from './admin.guard';
@@ -61,7 +61,7 @@ export class AdminController {
 
   // GET /api/v1/admin/lojas/:id — detalhe da loja
   @Get('lojas/:id')
-  detalharLoja(@Param('id') id: string) {
+  detalharLoja(@Param('id', ParseUUIDPipe) id: string) {
     return this.adminService.detalharLoja(id);
   }
 
@@ -69,7 +69,7 @@ export class AdminController {
   @Patch('lojas/:id')
   @HttpCode(HttpStatus.OK)
   atualizarLoja(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: AtualizarLojaDto,
     @UsuarioAtual() admin: UsuarioLogado,
   ) {
@@ -80,7 +80,7 @@ export class AdminController {
   @Patch('lojas/:id/ativar')
   @HttpCode(HttpStatus.OK)
   ativarDesativar(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: AtivarDesativarDto,
     @UsuarioAtual() admin: UsuarioLogado,
   ) {
@@ -91,8 +91,8 @@ export class AdminController {
   @Post('lojas/:lojaId/usuarios/:userId/resetar-senha')
   @HttpCode(HttpStatus.OK)
   resetarSenha(
-    @Param('lojaId') lojaId: string,
-    @Param('userId') userId: string,
+    @Param('lojaId', ParseUUIDPipe) lojaId: string,
+    @Param('userId', ParseUUIDPipe) userId: string,
     @UsuarioAtual() admin: UsuarioLogado,
   ) {
     return this.adminService.resetarSenha(lojaId, userId, admin.id);
@@ -108,7 +108,7 @@ export class AdminController {
   @Delete('lojas/:id')
   @HttpCode(HttpStatus.OK)
   excluirLoja(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @UsuarioAtual() admin: UsuarioLogado,
   ) {
     return this.adminService.excluirLoja(id, admin.id);
@@ -118,7 +118,7 @@ export class AdminController {
   @Post('notificacoes/loja/:lojaId')
   @HttpCode(HttpStatus.OK)
   notificarLoja(
-    @Param('lojaId') lojaId: string,
+    @Param('lojaId', ParseUUIDPipe) lojaId: string,
     @Body() dto: EnviarNotificacaoDto,
   ) {
     return this.notificacoesService.criarParaLoja(lojaId, dto.mensagem);

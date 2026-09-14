@@ -1,7 +1,7 @@
 import {
   Controller, Get, Post, Patch, Delete,
   Body, Param, UseGuards, HttpCode, HttpStatus,
-  Res, NotFoundException,
+  Res, NotFoundException, ParseUUIDPipe,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { Response } from 'express';
@@ -38,7 +38,7 @@ export class LinksOrigemController {
 
   @Patch(':id')
   atualizar(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: AtualizarLinkDto,
     @UsuarioAtual() usuario: UsuarioLogado,
   ) {
@@ -47,7 +47,7 @@ export class LinksOrigemController {
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  remover(@Param('id') id: string, @UsuarioAtual() usuario: UsuarioLogado) {
+  remover(@Param('id', ParseUUIDPipe) id: string, @UsuarioAtual() usuario: UsuarioLogado) {
     return this.service.remover(id, usuario.lojaId);
   }
 }

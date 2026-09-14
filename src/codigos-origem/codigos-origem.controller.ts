@@ -1,6 +1,6 @@
 import {
   Controller, Get, Post, Patch, Delete,
-  Body, Param, UseGuards, HttpCode, HttpStatus,
+  Body, Param, UseGuards, HttpCode, HttpStatus, ParseUUIDPipe,
 } from '@nestjs/common';
 import { CodigosOrigemService } from './codigos-origem.service';
 import { CriarCodigoDto } from './dto/criar-codigo.dto';
@@ -27,7 +27,7 @@ export class CodigosOrigemController {
 
   @Patch(':id')
   atualizar(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: Partial<CriarCodigoDto>,
     @UsuarioAtual() usuario: UsuarioLogado,
   ) {
@@ -37,7 +37,7 @@ export class CodigosOrigemController {
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   remover(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @UsuarioAtual() usuario: UsuarioLogado,
   ) {
     return this.service.remover(id, usuario.lojaId);

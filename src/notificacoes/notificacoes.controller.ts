@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Patch, Param, UseGuards, HttpCode, HttpStatus,
+  Controller, Get, Patch, Param, UseGuards, HttpCode, HttpStatus, ParseUUIDPipe,
 } from '@nestjs/common';
 import { NotificacoesService } from './notificacoes.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -19,7 +19,7 @@ export class NotificacoesController {
   // PATCH /api/v1/notificacoes/:id/lida — marca notificação como lida
   @Patch(':id/lida')
   @HttpCode(HttpStatus.OK)
-  marcarLida(@Param('id') id: string, @UsuarioAtual() usuario: any) {
+  marcarLida(@Param('id', ParseUUIDPipe) id: string, @UsuarioAtual() usuario: any) {
     return this.notificacoesService.marcarComoLida(id, usuario.lojaId);
   }
 }

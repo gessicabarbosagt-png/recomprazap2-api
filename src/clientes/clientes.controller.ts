@@ -1,7 +1,7 @@
 import {
   Controller, Get, Post, Patch, Delete,
   Body, Param, Query, UseGuards, HttpCode, HttpStatus,
-  UseInterceptors, UploadedFile, Res, BadRequestException,
+  UseInterceptors, UploadedFile, Res, BadRequestException, ParseUUIDPipe,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
@@ -65,7 +65,7 @@ export class ClientesController {
   // GET /api/v1/clientes/:id
   @Get(':id')
   buscarPorId(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @UsuarioAtual() usuario: UsuarioLogado,
   ) {
     return this.clientesService.buscarPorId(id, usuario.lojaId);
@@ -109,7 +109,7 @@ export class ClientesController {
   // PATCH /api/v1/clientes/:id
   @Patch(':id')
   atualizar(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: AtualizarClienteDto,
     @UsuarioAtual() usuario: UsuarioLogado,
   ) {
@@ -120,7 +120,7 @@ export class ClientesController {
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   remover(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @UsuarioAtual() usuario: UsuarioLogado,
   ) {
     return this.clientesService.remover(id, usuario.lojaId);

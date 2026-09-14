@@ -1,7 +1,7 @@
 import {
   Controller, UseGuards, Get, Post, Param,
   HttpCode, HttpStatus, Headers, RawBodyRequest, Req,
-  UnauthorizedException, BadRequestException,
+  UnauthorizedException, BadRequestException, ParseUUIDPipe,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
@@ -69,7 +69,7 @@ export class PagamentosController {
   // GET /api/v1/admin/lojas/:lojaId/pagamentos
   @UseGuards(AdminGuard)
   @Get('admin/lojas/:lojaId/pagamentos')
-  listarPagamentosAdmin(@Param('lojaId') lojaId: string) {
+  listarPagamentosAdmin(@Param('lojaId', ParseUUIDPipe) lojaId: string) {
     return this.pagamentosService.listarPagamentosAdmin(lojaId);
   }
 }
