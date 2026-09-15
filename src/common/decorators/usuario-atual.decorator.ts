@@ -31,4 +31,5 @@ export interface UsuarioLogado {
   lojaId: string;
   perfil: string;
   role: string;
+  jti: string | null;
 }

@@ -191,6 +191,13 @@ export class AgendadorService implements OnApplicationBootstrap {
     if (result.count > 0) {
       this.logger.log(`${result.count} lembrete(s) antigos marcados como sem_resposta`);
     }
+
+    const sessoes = await this.sql`
+      DELETE FROM sessoes_ativas WHERE expires_at < NOW()
+    `.catch(() => ({ count: 0 }));
+    if (sessoes.count > 0) {
+      this.logger.log(`${sessoes.count} sessão(ões) expirada(s) removida(s)`);
+    }
   }
 
   // ----------------------------------------------------------------

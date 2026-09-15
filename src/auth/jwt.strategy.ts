@@ -1,4 +1,4 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
@@ -23,16 +23,29 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   // O que validate retornar fica disponível como req.user em todo o sistema
-  async validate(payload: { sub: string; lojaId: string; perfil: string; role?: string }) {
+  async validate(payload: { sub: string; lojaId: string; perfil: string; role?: string; jti?: string }) {
     let role = payload.role ?? null;
 
     if (!role) {
-      // Token gerado antes do campo 'role' existir no payload (logins anteriores ao painel admin).
-      // Busca o role atual do banco para não bloquear o usuário admin com token antigo.
       const [u] = await this.sql`
         SELECT role FROM usuarios WHERE id = ${payload.sub} AND deleted_at IS NULL
       `.catch(() => [undefined]);
       role = u?.role ?? 'lojista';
+    }
+
+    if (!payload.jti) {
+      throw new UnauthorizedException('Token sem sessão — faça login novamente');
+    }
+
+    const [sessao] = await this.sql`
+      SELECT id FROM sessoes_ativas
+      WHERE jti = ${payload.jti}
+        AND revogado_em IS NULL
+        AND expires_at > NOW()
+    `.catch(() => [undefined]);
+
+    if (!sessao) {
+      throw new UnauthorizedException('Sessão revogada ou expirada');
     }
 
     return {
@@ -40,6 +53,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       lojaId: payload.lojaId ?? null,
       perfil: payload.perfil,
       role,
+      jti: payload.jti,
     };
   }
 }

@@ -48,12 +48,19 @@ export class AuthService {
       throw new UnauthorizedException('Credenciais inválidas');
     }
 
+    const jti = crypto.randomUUID();
     const payload = {
       sub: usuario.id,
       lojaId: usuario.lojaId ?? null,
       perfil: usuario.perfil,
       role: usuario.role ?? 'lojista',
+      jti,
     };
+
+    await this.sql`
+      INSERT INTO sessoes_ativas (usuario_id, jti, expires_at)
+      VALUES (${usuario.id}, ${jti}, NOW() + INTERVAL '7 days')
+    `;
 
     return {
       accessToken: this.jwtService.sign(payload),
@@ -68,6 +75,22 @@ export class AuthService {
           : null,
       },
     };
+  }
+
+  async logout(token: string | undefined): Promise<void> {
+    if (!token) return;
+    try {
+      const payload = this.jwtService.verify<{ jti?: string }>(token);
+      if (payload?.jti) {
+        await this.sql`
+          UPDATE sessoes_ativas SET revogado_em = NOW()
+          WHERE jti = ${payload.jti} AND revogado_em IS NULL
+        `;
+        this.logger.log(`[LOGOUT] jti=${payload.jti} revogado`);
+      }
+    } catch {
+      // Token expirado ou inválido — não há sessão para revogar
+    }
   }
 
   // ── Redefinição de senha ─────────────────────────────────────────────────────
