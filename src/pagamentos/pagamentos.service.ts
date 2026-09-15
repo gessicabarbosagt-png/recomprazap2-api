@@ -94,6 +94,8 @@ export class PagamentosService {
         await this.processarCheckoutCompletado(event.data.object as Stripe.Checkout.Session);
       } else if (event.type === 'invoice.payment_failed') {
         await this.processarPagamentoFalhou(event.data.object as Stripe.Invoice);
+      } else if (event.type === 'customer.subscription.deleted') {
+        await this.processarAssinaturaCancelada(event.data.object as Stripe.Subscription);
       }
     } catch (e: any) {
       this.logger.error(`[Stripe Webhook] erro ao processar ${event.type}: ${e?.message}`);
@@ -229,6 +231,46 @@ export class PagamentosService {
     } catch (e: any) {
       this.logger.warn(`[Email] erro ao enviar email inadimplente: ${e?.message}`);
     }
+  }
+
+  // ── Cancelamento de assinatura (cancel_at_period_end) ─────────────
+
+  async cancelarAssinatura(lojaId: string) {
+    const [loja] = await this.sql`
+      SELECT stripe_subscription_id, proximo_vencimento FROM lojas
+      WHERE id = ${lojaId} AND deleted_at IS NULL
+    `;
+    if (!loja?.stripeSubscriptionId) {
+      throw new BadRequestException('Nenhuma assinatura ativa encontrada para cancelar');
+    }
+
+    await this.stripe.subscriptions.update(loja.stripeSubscriptionId, {
+      cancel_at_period_end: true,
+    });
+
+    await this.sql`
+      UPDATE lojas SET status_assinatura = 'cancelada_agendada', updated_at = NOW()
+      WHERE id = ${lojaId}
+    `;
+
+    this.logger.log(`[Stripe] cancelamento agendado sub=${loja.stripeSubscriptionId} loja=${lojaId}`);
+    return { ok: true, proximoVencimento: loja.proximoVencimento };
+  }
+
+  private async processarAssinaturaCancelada(subscription: Stripe.Subscription) {
+    const lojaId = subscription.metadata?.lojaId;
+    if (!lojaId) {
+      this.logger.warn('[Stripe Webhook] customer.subscription.deleted sem lojaId no metadata');
+      return;
+    }
+    await this.sql`
+      UPDATE lojas SET
+        status_assinatura = 'cancelada',
+        ativa             = FALSE,
+        updated_at        = NOW()
+      WHERE id = ${lojaId}
+    `;
+    this.logger.log(`[Stripe Webhook] assinatura cancelada efetivada: loja=${lojaId}`);
   }
 
   // ── Atualiza assinatura Stripe ao fazer upgrade de plano ──────────

@@ -64,6 +64,14 @@ export class PagamentosController {
     return this.pagamentosService.criarCheckoutSession(usuario.lojaId);
   }
 
+  // POST /api/v1/pagamentos/stripe/cancelar-assinatura
+  @UseGuards(JwtAuthGuard)
+  @Post('pagamentos/stripe/cancelar-assinatura')
+  @HttpCode(HttpStatus.OK)
+  cancelarAssinatura(@UsuarioAtual() usuario: UsuarioLogado) {
+    return this.pagamentosService.cancelarAssinatura(usuario.lojaId);
+  }
+
   // ── Rotas admin ────────────────────────────────────────────────────
 
   // GET /api/v1/admin/lojas/:lojaId/pagamentos
